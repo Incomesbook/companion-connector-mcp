@@ -128,6 +128,68 @@ function runFablePromptFile(promptPath, maxOutputChars = 200000) {
   return { jobId: id, status: r.status === 0 ? 'completed' : 'failed', resultPath, stdoutPreview: out.stdout.slice(0, 2000), stderrPreview: out.stderr.slice(0, 2000) };
 }
 
+
+function listJobs(limit = 100) {
+  return fs.readdirSync(jobsDir).filter(x => x.endsWith('.json')).sort().slice(-Math.min(Number(limit)||100, 500)).map(f => JSON.parse(fs.readFileSync(path.join(jobsDir, f), 'utf8')));
+}
+function listFableRuns(limit = 100) {
+  return fs.readdirSync(resultsDir).filter(x => x.includes('_fable_run.json')).sort().slice(-Math.min(Number(limit)||100, 500)).map(f => {
+    const p = path.join(resultsDir, f);
+    const o = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return { id: o.id, promptPath: o.promptPath, exitCode: o.exitCode, resultPath: p, stdoutBytes: Buffer.byteLength(o.stdout || ''), stderrBytes: Buffer.byteLength(o.stderr || '') };
+  });
+}
+
+function createQuestionBatch(args = {}) {
+  const id = safeId('qbatch');
+  const dir = assertWritable(path.join(resultsDir, id));
+  fs.mkdirSync(dir, { recursive: true });
+  const questions = Array.isArray(args.questions) ? args.questions.map(String) : [String(args.question || '')];
+  const context = args.context || '';
+  const files = [];
+  for (const rid of (Array.isArray(args.resourceIds) ? args.resourceIds : [])) { const r = resourceIndex().find(x => x.id === rid); if (r) files.push(r.path); }
+  for (const fp of (Array.isArray(args.filePaths) ? args.filePaths : [])) files.push(fp);
+  const unique = [...new Set(files)].map(assertReadable);
+  const md = [];
+  md.push(`ASK_FABLE5 - Question batch ${args.title || id}`);
+  md.push('-NoMap'); md.push(''); md.push('Context:'); md.push(String(context)); md.push('');
+  md.push('Questions:'); questions.forEach((q, i) => md.push(`${i + 1}. ${q}`)); md.push('');
+  md.push('Attached paths:'); unique.forEach((fp, i) => md.push(`${i + 1}. ${fp}`));
+  md.push(''); md.push('Instructions: Answer every question. If a file is referenced, use included text sections or request a follow-up file pointer.');
+  for (const fp of unique) {
+    const st = fs.statSync(fp); md.push(''); md.push(`## PATH ${fp}`); md.push(`size=${st.size} mtime=${st.mtime.toISOString()}`);
+    if (st.isFile() && isTextLike(fp)) { const part = readWholeTextBounded(fp, args.maxBytesPerFile || 250000); md.push(`included_bytes=${part.bytes} truncated=${part.truncated}`); md.push('```text'); md.push(part.text); md.push('```'); }
+    else if (st.isFile() && /\.(png|jpe?g|gif)$/i.test(fp)) md.push(`image_meta=${JSON.stringify(detectImage(fp))}`);
+  }
+  const promptPath = path.join(dir, 'question_batch.md'); fs.writeFileSync(promptPath, md.join('\n'), 'utf8');
+  const manifest = { id, title: args.title || id, promptPath, questions, files: unique, createdAt: new Date().toISOString() };
+  const manifestPath = path.join(dir, 'manifest.json'); fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+  return { batchId: id, promptPath, manifestPath, questions: questions.length, files: unique.length };
+}
+
+function connectorHealthReport() {
+  return { ok: true, version: '4.0.0', root: ROOT, port: PORT, tools: listTools().length, resources: resourceIndex().length, jobs: fs.readdirSync(jobsDir).filter(x => x.endsWith('.json')).length, results: fs.readdirSync(resultsDir).length, services: serviceCatalog().length, allowedRoots: CFG.allowedRoots, writeRoot: CFG.writeRoot };
+}
+function createFableImprovementSurvey() {
+  const questions = [
+    'What communication or handoff problems did you experience with ChatGPT?',
+    'What file-transfer or context-transfer problems did you experience?',
+    'What should Companion Connector add for very large questions?',
+    'What should Companion Connector add for screenshots and attachments?',
+    'What should Companion Connector add for many questions in one task?',
+    'What should Companion Connector add for reliability and verification?',
+    'What should Companion Connector add for future 21-folder MCP services?',
+    'What exact tests should prove the next version is ready?'
+  ];
+  return createQuestionBatch({ title: 'Fable improvement survey', context: 'Please answer as an implementation checklist for the existing Node CompanionConnector. New files only inside CompanionConnector.', questions, filePaths: [path.join(ROOT, 'README.md'), path.join(ROOT, 'src', 'server.js')], maxBytesPerFile: 500000 });
+}
+function runQuestionBatch(promptPath, maxOutputChars = 300000) { return runFablePromptFile(promptPath, maxOutputChars); }
+function askFableBig(args = {}) {
+  const batch = createQuestionBatch({ title: args.title || 'Big Fable question', context: args.context || '', question: args.question || '', questions: args.questions || undefined, resourceIds: args.resourceIds || [], filePaths: args.filePaths || [], maxBytesPerFile: args.maxBytesPerFile || 500000 });
+  const run = runQuestionBatch(batch.promptPath, args.maxOutputChars || 300000);
+  return { ...batch, fableRun: run };
+}
+
 function listTools() { return [
  { name:'search', title:'Search companion resources', description:'Search registered resources and job result pointers.', inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'fetch', title:'Fetch companion item', description:'Fetch registered text/image/job resource by id.', inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
@@ -148,7 +210,15 @@ function listTools() { return [
  { name:'ingest_attachment_base64', title:'Ingest attachment base64', description:'Store a provided attachment payload under connector uploads and register it.', inputSchema:{type:'object',properties:{filename:{type:'string'},mime:{type:'string'},base64:{type:'string'}},required:['base64']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
  { name:'create_fable_bundle', title:'Create Fable bundle', description:'Create a large file-backed Fable prompt bundle from resource IDs and file paths.', inputSchema:{type:'object',properties:{title:{type:'string'},question:{type:'string'},resourceIds:{type:'array'},filePaths:{type:'array'},includeFullText:{type:'boolean'},includeImageData:{type:'boolean'},maxBytesPerFile:{type:'number'}},required:['title','question']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
  { name:'run_fable_bundle', title:'Run Fable bundle', description:'Run AskFable on a prepared bundle prompt file and store the full result.', inputSchema:{type:'object',properties:{bundlePath:{type:'string'},maxOutputChars:{type:'number'}},required:['bundlePath']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
-{ name:'get_job_status', title:'Get job status', description:'Read connector job record.', inputSchema:{type:'object',properties:{jobId:{type:'string'}},required:['jobId']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+
+ { name:'create_question_batch', title:'Create question batch', description:'Create a multi-question Fable prompt bundle with attached local resources.', inputSchema:{type:'object',properties:{title:{type:'string'},context:{type:'string'},question:{type:'string'},questions:{type:'array'},resourceIds:{type:'array'},filePaths:{type:'array'},maxBytesPerFile:{type:'number'}},required:['title']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'run_question_batch', title:'Run question batch', description:'Run AskFable on a question batch prompt path.', inputSchema:{type:'object',properties:{promptPath:{type:'string'},maxOutputChars:{type:'number'}},required:['promptPath']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'ask_fable_big', title:'Ask Fable big', description:'Create a question batch and run Fable in one call, using file-backed context.', inputSchema:{type:'object',properties:{title:{type:'string'},context:{type:'string'},question:{type:'string'},questions:{type:'array'},resourceIds:{type:'array'},filePaths:{type:'array'},maxBytesPerFile:{type:'number'},maxOutputChars:{type:'number'}},required:['title']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'create_fable_improvement_survey', title:'Create Fable improvement survey', description:'Create a standard survey asking Fable what to improve next.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'connector_health_report', title:'Connector health report', description:'Return connector capability and artifact counts.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'list_jobs', title:'List jobs', description:'List recent connector job records.', inputSchema:{type:'object',properties:{limit:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'list_fable_runs', title:'List Fable runs', description:'List recent stored Fable run outputs.', inputSchema:{type:'object',properties:{limit:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'get_job_status', title:'Get job status', description:'Read connector job record.', inputSchema:{type:'object',properties:{jobId:{type:'string'}},required:['jobId']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'list_registered_resources', title:'List registered resources', description:'List pointer/image resources created by this connector.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} }
 ]; }
 function searchResources(query) { const q=String(query||'').toLowerCase(); const items=[...resourceIndex().map(r=>({id:r.id,title:r.title||r.id,type:r.type,url:''})),...serviceCatalog().map(s=>({id:s.service_id,title:s.folder,type:'mcp_service',url:''}))].filter(r=>JSON.stringify(r).toLowerCase().includes(q)).slice(0,80); return { results: items }; }
@@ -177,6 +247,14 @@ async function callTool(name, args={}) {
  if (name==='ingest_attachment_base64') { const rec = ingestAttachment(args.filename, args.mime, args.base64); return toolResult({ id: rec.id, title: rec.title, path: rec.path, type: rec.type, size: rec.size }); }
  if (name==='create_fable_bundle') return toolResult(createFableBundle(args));
  if (name==='run_fable_bundle') return toolResult(runFablePromptFile(args.bundlePath, args.maxOutputChars));
+ 
+ if (name==='create_question_batch') return toolResult(createQuestionBatch(args));
+ if (name==='run_question_batch') return toolResult(runQuestionBatch(args.promptPath, args.maxOutputChars));
+ if (name==='ask_fable_big') return toolResult(askFableBig(args));
+ if (name==='create_fable_improvement_survey') return toolResult(createFableImprovementSurvey());
+ if (name==='connector_health_report') return toolResult(connectorHealthReport());
+ if (name==='list_jobs') return toolResult({ jobs: listJobs(args.limit) });
+ if (name==='list_fable_runs') return toolResult({ runs: listFableRuns(args.limit) });
  if (name==='get_job_status') { const f=path.join(jobsDir,`${String(args.jobId)}.json`); if(!fs.existsSync(f)) throw new Error('job_not_found'); return toolResult(JSON.parse(fs.readFileSync(f,'utf8'))); }
  if (name==='list_registered_resources') return toolResult({resources:resourceIndex()});
  throw new Error('unknown_tool');
@@ -184,9 +262,9 @@ async function callTool(name, args={}) {
 
 function listResources() { return [ { uri:'companion://status', name:'Companion Connector status', mimeType:'application/json' }, { uri:'ui://companion/dashboard.html', name:'Companion dashboard', mimeType:'text/html;profile=mcp-app' }, { uri:'companion://mcp-services', name:'21 MCP service catalog', mimeType:'application/json' }, ...resourceIndex().map(r=>({uri:`companion://resource/${r.id}`, name:r.title||r.id, mimeType:(r.type||'').includes('image')?'application/json':'text/plain'})) ]; }
 function readResource(uri) { if(uri==='companion://status') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify({ok:true,root:ROOT,resources:resourceIndex().length,services:MCP_SERVICE_FOLDERS.length},null,2)}]}; if(uri==='ui://companion/dashboard.html') return {contents:[{uri,mimeType:'text/html;profile=mcp-app',text:fs.readFileSync(path.join(webDir,'dashboard.html'),'utf8')}]}; if(uri==='companion://mcp-services') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(serviceCatalog(),null,2)}]}; const m=String(uri).match(/^companion:\/\/resource\/(.+)$/); if(m) return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fetchResource(m[1]),null,2)}]}; throw new Error('resource_not_found'); }
-async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'2.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); return rpc(id,await callTool(name,args||{})); } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
+async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'4.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); return rpc(id,await callTool(name,args||{})); } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
 async function readBody(req){ const chunks=[]; for await (const c of req) chunks.push(c); return Buffer.concat(chunks).toString('utf8'); }
-const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'2.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
+const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'4.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
 server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v2 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
 
 

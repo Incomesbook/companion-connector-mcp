@@ -1,13 +1,14 @@
 {
   "name": "companionconnector",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
     "test": "node scripts/selftest.js",
     "start": "node src/server.js",
     "dev": "node src/server.js",
-    "test:fable": "node scripts/fable-handoff-test.js"
+    "test:fable": "node scripts/fable-handoff-test.js",
+    "test:v4": "node scripts/v4-extra-test.js"
   },
   "keywords": [],
   "author": "",
