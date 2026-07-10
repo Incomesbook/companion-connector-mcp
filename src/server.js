@@ -25,7 +25,7 @@ function rpc(id, result) { return { jsonrpc: '2.0', id, result }; }
 function rpcErr(id, code, message) { return { jsonrpc: '2.0', id, error: { code, message } }; }
 function safeId(prefix='job') { return `${prefix}_${new Date().toISOString().replace(/[-:.TZ]/g,'')}_${crypto.randomBytes(4).toString('hex')}`; }
 function isInside(child, parent) { const rel = path.relative(path.resolve(parent), path.resolve(child)); return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel)); }
-function assertReadable(p) { const real = fs.realpathSync(path.resolve(String(p || ''))); if (!CFG.allowedRoots.some(r => isInside(real, r))) throw new Error('path_not_allowed'); return real; }
+function assertReadable(p) { const real = fs.realpathSync(path.resolve(String(p || ''))); const cfgOk = CFG.allowedRoots.some(r => isInside(real, r)); const driveOk = discoverReadableRoots().some(r => r.readable && isInside(real, r.root)); if (!cfgOk && !driveOk) throw new Error('path_not_allowed'); return real; }
 function assertWritable(p) { const full = path.resolve(String(p || '')); const realRoot = fs.realpathSync(ROOT); if (!isInside(full, realRoot)) throw new Error('write_path_not_allowed'); return full; }
 function argsHash(args) { return crypto.createHash('sha256').update(JSON.stringify(args || {})).digest('hex'); }
 function audit(name, args) { fs.appendFileSync(path.join(logsDir, 'calls.log'), JSON.stringify({ ts: new Date().toISOString(), tool: name, argsHash: argsHash(args) }) + '\n'); }
@@ -486,6 +486,125 @@ function folderExplorer(args = {}) {
   return { root: folder, rel, count: entries.length, entries };
 }
 
+
+function discoverReadableRoots() {
+  const roots = [];
+  if (process.platform === 'win32') {
+    for (let c = 65; c <= 90; c++) {
+      const r = String.fromCharCode(c) + ':\\';
+      try { if (fs.existsSync(r)) roots.push({ root: r, readable: true }); } catch { roots.push({ root: r, readable: false }); }
+    }
+  } else {
+    roots.push({ root: '/', readable: true });
+  }
+  return roots;
+}
+function fileSnippet(text, max = 3000) {
+  const clean = String(text || '').replace(/\r/g, '');
+  if (clean.length <= max) return clean;
+  const half = Math.floor(max / 2);
+  return clean.slice(0, half) + '\n\n...[middle omitted in report; full chunks available in bundle]...\n\n' + clean.slice(-half);
+}
+function topTermsFromText(text, limit = 30) {
+  const stop = new Set('the and for with that this from are you your file files folder import const function return true false null undefined чтобы как это для что или all path data на по из в и не a an to of in is it be as at by or on if else while let var new'.split(/\s+/));
+  const map = new Map();
+  const m = String(text || '').toLowerCase().match(/[a-zа-я0-9_]{3,}/giu) || [];
+  for (const w of m) if (!stop.has(w)) map.set(w, (map.get(w) || 0) + 1);
+  return [...map.entries()].sort((a,b)=>b[1]-a[1]).slice(0, limit).map(([term,count])=>({term,count}));
+}
+function createFolderIntelReport(args = {}) {
+  const index = JSON.parse(fs.readFileSync(assertReadable(args.indexPath), 'utf8'));
+  const id = safeId('folder_intel');
+  const dir = assertWritable(path.join(resultsDir, id));
+  fs.mkdirSync(dir, { recursive: true });
+  const extCounts = {};
+  const fileReports = [];
+  let combinedForTerms = '';
+  let processedFiles = 0;
+  let processedChunks = 0;
+  for (const f of index.files || []) {
+    extCounts[f.ext || ''] = (extCounts[f.ext || ''] || 0) + 1;
+    const chunks = [];
+    let full = '';
+    for (const ch of f.chunks || []) {
+      const t = fs.readFileSync(assertReadable(ch.path), 'utf8');
+      full += t + '\n';
+      processedChunks++;
+    }
+    if (full) combinedForTerms += '\n' + full.slice(0, 20000);
+    const headings = (full.match(/^\s{0,3}#{1,6}\s+.+$/gmi) || []).slice(0, 50);
+    const lines = full.split(/\n/).filter(x=>x.trim()).length;
+    fileReports.push({ index: f.index, rel: f.rel, size: f.size, ext: f.ext, sha256: f.sha256, readStatus: f.readStatus, chunks: (f.chunks||[]).length, nonEmptyLines: lines, headings, snippet: fileSnippet(full, Number(args.snippetChars || 2500)) });
+    processedFiles++;
+  }
+  const topTerms = topTermsFromText(combinedForTerms, 80);
+  const report = { id, createdAt: new Date().toISOString(), sourceIndexPath: args.indexPath, root: index.root, fileCount: index.files.length, processedFiles, processedChunks, textFileCount: index.textFileCount, binaryFileCount: index.binaryFileCount, totalChunks: index.totalChunks, bytesRead: index.bytesRead, extCounts, topTerms, fileReports };
+  const jsonPath = path.join(dir, 'folder_intel_report.json');
+  fs.writeFileSync(jsonPath, JSON.stringify(report, null, 2), 'utf8');
+  const md = ['# Folder intelligence report', '', `Root: ${report.root}`, `Files: ${report.fileCount}`, `Processed files: ${processedFiles}`, `Text chunks: ${processedChunks}`, `Bytes read: ${report.bytesRead}`, '', '## Extensions', ''];
+  for (const [k,v] of Object.entries(extCounts).sort()) md.push(`- ${k || '[none]'}: ${v}`);
+  md.push('', '## Top terms', '', topTerms.map(x=>`${x.term}(${x.count})`).join(', '), '', '## Files');
+  for (const f of fileReports) {
+    md.push('', `### [${f.index}] ${f.rel}`, `size=${f.size} chunks=${f.chunks} status=${f.readStatus} sha256=${f.sha256}`);
+    if (f.headings.length) md.push('Headings:', ...f.headings.map(h=>`- ${h}`));
+    if (f.snippet) md.push('', 'Snippet:', '```text', f.snippet, '```');
+  }
+  const mdPath = path.join(dir, 'folder_intel_report.md');
+  fs.writeFileSync(mdPath, md.join('\n'), 'utf8');
+  return { reportId: id, jsonPath, mdPath, processedFiles, processedChunks, topTerms: topTerms.slice(0,20) };
+}
+
+
+function createFableFolderSummaryFile(args = {}) {
+  const bundle = args.indexPath ? null : createReadOnlyFolderContentBundle(args);
+  const indexPath = args.indexPath || bundle.indexPath;
+  const intel = args.intelReportPath ? { mdPath: args.intelReportPath } : createFolderIntelReport({ indexPath, snippetChars: args.snippetChars || 2500 });
+  const id = safeId('fable_folder_summary');
+  const promptPath = assertWritable(path.join(resultsDir, `${id}_prompt.md`));
+  const prompt = [`ASK_FABLE5 - Folder summary from read-only bridge`, `-NoMap`, ``, `You are reviewing a complete read-only folder bridge package.`, `Do not request or suggest changing the source folder.`, `The connector has already read all files read-only, created full text chunks, hash-verified binaries, and prepared an intelligence report.`, ``, `Content index path: ${indexPath}`, `Intel report path: ${intel.mdPath}`, ``, `Task: read the provided intel report path and produce a practical summary:`, `1. What this folder is about.`, `2. Main file groups and topics.`, `3. Important scripts/reports/data artifacts.`, `4. TradingView/indicator/research conclusions visible from the files.`, `5. What should be inspected next using chunk search/read tools.`, ``, `Return a clear Russian summary. Mention if more detailed per-file analysis requires reading specific chunk paths from content_index.`].join('\n');
+  fs.writeFileSync(promptPath, prompt, 'utf8');
+  const run = runFablePromptFile(promptPath, args.maxOutputChars || 250000);
+  const summaryPath = assertWritable(path.join(resultsDir, `${id}_FABLE_SUMMARY.txt`));
+  let full = '';
+  try { full = JSON.parse(fs.readFileSync(run.resultPath, 'utf8')).stdout || ''; } catch { full = JSON.stringify(run); }
+  fs.writeFileSync(summaryPath, full, 'utf8');
+  return { summaryId: id, indexPath, intelReportPath: intel.mdPath, promptPath, fableRun: run, summaryPath, summaryBytes: Buffer.byteLength(full) };
+}
+function receiveTextFile(args = {}) {
+  const p = assertReadable(args.path);
+  const out = boundedText(p, args.offset || 0, args.limit || CFG.maxSliceBytes || 200000);
+  return { path: out.path, size: out.size, offset: out.offset, bytes: out.bytes, text: out.text };
+}
+
+
+function createGroundedFableFolderSummaryFile(args = {}) {
+  const bundle = args.indexPath ? null : createReadOnlyFolderContentBundle(args);
+  const indexPath = args.indexPath || bundle.indexPath;
+  const idx = JSON.parse(fs.readFileSync(assertReadable(indexPath), 'utf8'));
+  const extCounts = {};
+  const roots = {};
+  for (const f of idx.files || []) {
+    extCounts[f.ext || '[none]'] = (extCounts[f.ext || '[none]'] || 0) + 1;
+    const top = f.rel.includes('/') ? f.rel.split('/')[0] : '[root]';
+    roots[top] = (roots[top] || 0) + 1;
+  }
+  const id = safeId('grounded_fable_summary');
+  const promptPath = assertWritable(path.join(resultsDir, `${id}_prompt.md`));
+  const lines = ['ASK_FABLE5 - Grounded folder summary', '-NoMap', '', 'STRICT RULES: Use only facts listed in this prompt. Do not invent file names, folders, indicators, scripts, or conclusions. If a detail is not visible, say it is not visible in this compact index. Return Russian summary.', '', `Root: ${idx.root}`, `Files: ${idx.files.length}`, `Text files: ${idx.textFileCount}`, `Binary files: ${idx.binaryFileCount}`, `Chunks: ${idx.totalChunks}`, `Bytes read: ${idx.bytesRead}`, '', 'Extensions:'];
+  Object.entries(extCounts).sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>lines.push(`- ${k}: ${v}`));
+  lines.push('', 'Top-level groups:');
+  Object.entries(roots).sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>lines.push(`- ${k}: ${v}`));
+  lines.push('', 'All file paths from the read-only index:');
+  for (const f of idx.files || []) lines.push(`- [${f.index}] ${f.rel} | ext=${f.ext||''} | size=${f.size} | chunks=${(f.chunks||[]).length} | status=${f.readStatus}`);
+  fs.writeFileSync(promptPath, lines.join('\n'), 'utf8');
+  const run = runFablePromptFile(promptPath, args.maxOutputChars || 200000);
+  const summaryPath = assertWritable(path.join(resultsDir, `${id}_FABLE_GROUNDED_SUMMARY.txt`));
+  let full = '';
+  try { full = JSON.parse(fs.readFileSync(run.resultPath, 'utf8')).stdout || ''; } catch { full = JSON.stringify(run); }
+  fs.writeFileSync(summaryPath, full, 'utf8');
+  return { summaryId: id, indexPath, promptPath, fableRun: run, summaryPath, summaryBytes: Buffer.byteLength(full) };
+}
+
 function listTools() { return [
  { name:'search', title:'Search companion resources', description:'Search registered resources and job result pointers.', inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'fetch', title:'Fetch companion item', description:'Fetch registered text/image/job resource by id.', inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
@@ -542,6 +661,13 @@ function listTools() { return [
  { name:'search_folder_content_bundle', title:'Search folder content bundle', description:'Search file names and chunked text content inside a read-only folder content bundle.', inputSchema:{type:'object',properties:{indexPath:{type:'string'},query:{type:'string'},maxResults:{type:'number'}},required:['indexPath','query']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'create_fable_folder_handoff', title:'Create Fable folder handoff', description:'Create a complete read-only folder content bundle and Fable access guide, optionally run Fable on the guide.', inputSchema:{type:'object',properties:{folderPath:{type:'string'},manifestPath:{type:'string'},chunkChars:{type:'number'},maxFiles:{type:'number'},runFable:{type:'boolean'},maxOutputChars:{type:'number'}},required:[]}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
  { name:'folder_explorer', title:'Folder explorer', description:'List one folder level under an allowed root without modifying files.', inputSchema:{type:'object',properties:{folderPath:{type:'string'},rel:{type:'string'}},required:['folderPath']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ 
+ { name:'discover_readable_roots', title:'Discover readable roots', description:'List drive roots that exist on this computer for read-only bridge use.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'create_folder_intel_report', title:'Create folder intelligence report', description:'Build a local intelligence report from a full read-only folder content bundle.', inputSchema:{type:'object',properties:{indexPath:{type:'string'},snippetChars:{type:'number'}},required:['indexPath']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'create_fable_folder_summary_file', title:'Create Fable folder summary file', description:'Run Fable on a read-only folder intel report and store Fable summary as a text file.', inputSchema:{type:'object',properties:{folderPath:{type:'string'},indexPath:{type:'string'},intelReportPath:{type:'string'},chunkChars:{type:'number'},snippetChars:{type:'number'},maxOutputChars:{type:'number'}},required:[]}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'receive_text_file', title:'Receive text file', description:'Read a text file produced by CompanionConnector/Fable by path and bounded offset.', inputSchema:{type:'object',properties:{path:{type:'string'},offset:{type:'number'},limit:{type:'number'}},required:['path']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ 
+ { name:'create_grounded_fable_folder_summary_file', title:'Create grounded Fable folder summary file', description:'Create a grounded Fable summary using inline counts and all file paths from the read-only folder index.', inputSchema:{type:'object',properties:{folderPath:{type:'string'},indexPath:{type:'string'},chunkChars:{type:'number'},maxOutputChars:{type:'number'}},required:[]}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
  { name:'get_job_status', title:'Get job status', description:'Read connector job record.', inputSchema:{type:'object',properties:{jobId:{type:'string'}},required:['jobId']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'list_registered_resources', title:'List registered resources', description:'List pointer/image resources created by this connector.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} }
 ]; }
@@ -607,6 +733,13 @@ async function callTool(name, args={}) {
  if (name==='search_folder_content_bundle') return toolResult(searchFolderContentBundle(args));
  if (name==='create_fable_folder_handoff') return toolResult(createFableFolderHandoff(args));
  if (name==='folder_explorer') return toolResult(folderExplorer(args));
+ 
+ if (name==='discover_readable_roots') return toolResult({ roots: discoverReadableRoots() });
+ if (name==='create_folder_intel_report') return toolResult(createFolderIntelReport(args));
+ if (name==='create_fable_folder_summary_file') return toolResult(createFableFolderSummaryFile(args));
+ if (name==='receive_text_file') return toolResult(receiveTextFile(args));
+ 
+ if (name==='create_grounded_fable_folder_summary_file') return toolResult(createGroundedFableFolderSummaryFile(args));
  if (name==='get_job_status') { const f=path.join(jobsDir,`${String(args.jobId)}.json`); if(!fs.existsSync(f)) throw new Error('job_not_found'); return toolResult(JSON.parse(fs.readFileSync(f,'utf8'))); }
  if (name==='list_registered_resources') return toolResult({resources:resourceIndex()});
  throw new Error('unknown_tool');
@@ -614,10 +747,10 @@ async function callTool(name, args={}) {
 
 function listResources() { return [ { uri:'companion://status', name:'Companion Connector status', mimeType:'application/json' }, { uri:'ui://companion/dashboard.html', name:'Companion dashboard', mimeType:'text/html;profile=mcp-app' }, { uri:'companion://mcp-services', name:'21 MCP service catalog', mimeType:'application/json' }, ...resourceIndex().map(r=>({uri:`companion://resource/${r.id}`, name:r.title||r.id, mimeType:(r.type||'').includes('image')?'application/json':'text/plain'})) ]; }
 function readResource(uri) { if(uri==='companion://status') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify({ok:true,root:ROOT,resources:resourceIndex().length,services:MCP_SERVICE_FOLDERS.length},null,2)}]}; if(uri==='ui://companion/dashboard.html') return {contents:[{uri,mimeType:'text/html;profile=mcp-app',text:fs.readFileSync(path.join(webDir,'dashboard.html'),'utf8')}]}; if(uri==='companion://mcp-services') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(serviceCatalog(),null,2)}]}; const m=String(uri).match(/^companion:\/\/resource\/(.+)$/); if(m) return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fetchResource(m[1]),null,2)}]}; throw new Error('resource_not_found'); }
-async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'8.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); return rpc(id,await callTool(name,args||{})); } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
+async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'9.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); return rpc(id,await callTool(name,args||{})); } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
 async function readBody(req){ const chunks=[]; for await (const c of req) chunks.push(c); return Buffer.concat(chunks).toString('utf8'); }
-const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'8.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
-server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v8 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
+const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'9.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
+server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v9 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
 
 
 

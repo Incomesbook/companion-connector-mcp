@@ -1,6 +1,6 @@
 {
   "name": "companion-connector-mcp",
-  "version": "8.0.0",
+  "version": "9.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -16,7 +16,10 @@
     "stop": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/stop-companion.ps1",
     "test:v7": "node scripts/v7-extra-test.js",
     "test:windowless": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/test-windowless-start.ps1",
-    "test:v8": "node scripts/v8-folder-bridge-test.js"
+    "test:v8": "node scripts/v8-folder-bridge-test.js",
+    "test:v9": "node scripts/v9-summary-test.js",
+    "test:v9:any": "node scripts/v9-any-root-test.js",
+    "test:v9:grounded": "node scripts/v9-grounded-summary-test.js"
   },
   "keywords": [],
   "author": "",
