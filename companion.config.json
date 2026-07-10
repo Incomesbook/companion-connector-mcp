@@ -1,0 +1,10 @@
+{
+  "allowedRoots": [
+    "J:\\Setup_VcCode_Workspace",
+    "J:\\Setup_VcCode_Workspace\\_AI_CHATS_ОБЩИЕ"
+  ],
+  "writeRoot": "J:\\Setup_VcCode_Workspace\\S04_Shared_Connections\\S04_02_Shared_MCP_Connections\\MCP_Gateway\\CompanionConnector",
+  "maxSliceBytes": 200000,
+  "maxResultBytes": 2000000,
+  "mcpProtocolVersion": "2025-06-18"
+}

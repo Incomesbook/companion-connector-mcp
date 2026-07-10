@@ -1,0 +1,7 @@
+node_modules/
+jobs/*.json
+results/*.json
+resources/*.json
+logs/*.log
+.env
+*.local
