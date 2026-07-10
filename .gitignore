@@ -5,3 +5,8 @@ resources/*.json
 logs/*.log
 .env
 *.local
+
+tools/*.zip
+tools/SHA256SUMS.txt
+tools/tunnel-client-*/
+profiles/runtime/
