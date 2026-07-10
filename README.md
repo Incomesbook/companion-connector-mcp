@@ -172,3 +172,29 @@ V7 tests:
 npm run test:v7
 npm run test:windowless
 ```
+
+## V8 read-only full-folder bridge
+
+V8 adds tools for large read-only folder access without modifying the source folder:
+
+- `folder_explorer`
+- `create_readonly_folder_manifest`
+- `audit_readonly_folder_manifest`
+- `create_readonly_folder_content_bundle`
+- `read_folder_bundle_chunk`
+- `search_folder_content_bundle`
+- `create_fable_folder_handoff`
+
+Tested target:
+
+```text
+J:\ПРОЕКТЫ\G01_All_About_Trading\G01_P09_All_for_TradingView\G01_P09_01_Project\TradingView_INDICATORS\IGOR_ENTER2\research_out
+```
+
+V8 test:
+
+```powershell
+npm run test:v8
+```
+
+The source folder is only read. Manifest, chunks, hashes, and Fable guide are written under CompanionConnector `results/`.

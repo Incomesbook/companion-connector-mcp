@@ -321,6 +321,171 @@ function createStartupShortcutInfo() {
   return { shortcut: path.join(ROOT, 'CompanionConnector-START-HIDDEN.vbs'), taskInstall: path.join(ROOT, 'scripts', 'install-hidden-task.ps1'), stop: path.join(ROOT, 'scripts', 'stop-companion.ps1') };
 }
 
+
+const TEXT_EXTS = new Set(['.txt','.md','.json','.jsonl','.csv','.tsv','.js','.ts','.cjs','.mjs','.ps1','.cmd','.bat','.html','.htm','.css','.xml','.yaml','.yml','.log','.pine','.pinescript','.sql','.ini','.cfg','.conf','.map']);
+function relUnix(root, p) { return path.relative(root, p).replace(/\\/g, '/'); }
+function isProbablyTextBuffer(buf) {
+  if (!buf || buf.length === 0) return true;
+  let zeros = 0;
+  const n = Math.min(buf.length, 4096);
+  for (let i=0;i<n;i++) if (buf[i] === 0) zeros++;
+  return zeros === 0;
+}
+function walkFolderReadOnly(folderPath, maxFiles = 1000000) {
+  const root = assertReadable(folderPath);
+  const st = fs.statSync(root);
+  if (!st.isDirectory()) throw new Error('not_a_directory');
+  const files = [];
+  const dirs = [];
+  const skipped = [];
+  const stack = [root];
+  while (stack.length) {
+    const dir = stack.pop();
+    dirs.push({ path: dir, rel: relUnix(root, dir), mtime: fs.statSync(dir).mtime.toISOString() });
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch(e) { skipped.push({ path: dir, reason: e.message }); continue; }
+    for (const name of names) {
+      const p = path.join(dir, name);
+      let lst;
+      try { lst = fs.lstatSync(p); } catch(e) { skipped.push({ path: p, reason: e.message }); continue; }
+      if (lst.isSymbolicLink()) { skipped.push({ path: p, rel: relUnix(root,p), type:'symlink', reason:'symlink_skipped_readonly_safety' }); continue; }
+      if (lst.isDirectory()) stack.push(p);
+      else if (lst.isFile()) {
+        if (files.length >= Number(maxFiles)) throw new Error('max_files_exceeded');
+        const ext = path.extname(p).toLowerCase();
+        const sha256 = sha256File(p);
+        files.push({ index: files.length, path: p, rel: relUnix(root,p), name, ext, size: lst.size, mtime: lst.mtime.toISOString(), sha256, textByExt: TEXT_EXTS.has(ext) });
+      }
+    }
+  }
+  return { root, files, dirs, skipped };
+}
+
+
+function createReadOnlyFolderManifest(args = {}) {
+  const tree = walkFolderReadOnly(args.folderPath, args.maxFiles || 1000000);
+  const id = safeId('ro_folder');
+  const dir = assertWritable(path.join(resultsDir, id));
+  fs.mkdirSync(dir, { recursive: true });
+  const manifest = { id, createdAt: new Date().toISOString(), mode: 'read_only_no_source_mutation', root: tree.root, fileCount: tree.files.length, dirCount: tree.dirs.length, skippedCount: tree.skipped.length, totalBytes: tree.files.reduce((a,b)=>a+b.size,0), files: tree.files, dirs: tree.dirs, skipped: tree.skipped };
+  const manifestPath = path.join(dir, 'manifest.json');
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+  const jsonlPath = path.join(dir, 'inventory.jsonl');
+  fs.writeFileSync(jsonlPath, tree.files.map(x => JSON.stringify(x)).join('\n'), 'utf8');
+  const schemaPath = path.join(dir, 'inventory_schema.json');
+  fs.writeFileSync(schemaPath, JSON.stringify({ type:'object', required:['path','rel','size','mtime','sha256'], properties:{ path:{type:'string'}, rel:{type:'string'}, size:{type:'number'}, mtime:{type:'string'}, sha256:{type:'string'} } }, null, 2), 'utf8');
+  const reportPath = path.join(dir, 'report.md');
+  fs.writeFileSync(reportPath, `# Read-only folder manifest\n\nRoot: ${tree.root}\nFiles: ${tree.files.length}\nDirs: ${tree.dirs.length}\nBytes: ${manifest.totalBytes}\nSkipped: ${tree.skipped.length}\nMode: read-only source; no writes to source folder.\n`, 'utf8');
+  return { folderBridgeId: id, root: tree.root, manifestPath, jsonlPath, schemaPath, reportPath, fileCount: manifest.fileCount, dirCount: manifest.dirCount, totalBytes: manifest.totalBytes, skippedCount: manifest.skippedCount };
+}
+function auditReadOnlyFolderManifest(args = {}) {
+  const m = JSON.parse(fs.readFileSync(assertReadable(args.manifestPath), 'utf8'));
+  const mismatches = [];
+  let checked = 0;
+  for (const f of m.files || []) {
+    checked++;
+    try {
+      const st = fs.statSync(f.path);
+      if (!st.isFile()) mismatches.push({ rel:f.rel, reason:'not_file' });
+      else if (st.size !== f.size) mismatches.push({ rel:f.rel, reason:'size_changed', was:f.size, now:st.size });
+      else if (sha256File(f.path) !== f.sha256) mismatches.push({ rel:f.rel, reason:'hash_changed' });
+    } catch(e) { mismatches.push({ rel:f.rel, reason:e.message }); }
+  }
+  return { ok: mismatches.length === 0, checked, mismatches: mismatches.slice(0,100), mismatchCount: mismatches.length, sourceRoot: m.root };
+}
+
+
+function createReadOnlyFolderContentBundle(args = {}) {
+  const manifestInfo = args.manifestPath ? null : createReadOnlyFolderManifest(args);
+  const manifestPath = args.manifestPath ? assertReadable(args.manifestPath) : manifestInfo.manifestPath;
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const id = safeId('ro_content');
+  const dir = assertWritable(path.join(resultsDir, id));
+  const chunksDir = path.join(dir, 'chunks');
+  fs.mkdirSync(chunksDir, { recursive: true });
+  const chunkChars = Math.max(1000, Number(args.chunkChars || 500000));
+  const index = { id, createdAt: new Date().toISOString(), sourceManifestPath: manifestPath, root: manifest.root, files: [], totalChunks: 0, textFileCount: 0, binaryFileCount: 0, bytesRead: 0, mode:'read_all_files_readonly_source_write_chunks_to_connector_results' };
+  for (const f of manifest.files || []) {
+    const ext = path.extname(f.path).toLowerCase();
+    let rec = { index: f.index, rel: f.rel, path: f.path, size: f.size, sha256: f.sha256, mtime: f.mtime, ext, chunks: [], readStatus: 'metadata_only' };
+    const buf = fs.readFileSync(f.path);
+    index.bytesRead += buf.length;
+    const textLike = TEXT_EXTS.has(ext) || isProbablyTextBuffer(buf.subarray(0, Math.min(buf.length, 4096)));
+    if (textLike) {
+      const text = buf.toString('utf8');
+      rec.readStatus = 'full_text_chunked';
+      for (let off = 0, c = 0; off < text.length; off += chunkChars, c++) {
+        const chunkText = text.slice(off, off + chunkChars);
+        const chunkFile = path.join(chunksDir, `file_${String(f.index).padStart(6,'0')}_chunk_${String(c).padStart(4,'0')}.txt`);
+        fs.writeFileSync(chunkFile, chunkText, 'utf8');
+        rec.chunks.push({ chunk: c, path: chunkFile, chars: chunkText.length, start: off, end: off + chunkText.length });
+      }
+      index.textFileCount++;
+      index.totalChunks += rec.chunks.length;
+    } else {
+      rec.readStatus = 'binary_read_hash_verified';
+      index.binaryFileCount++;
+    }
+    index.files.push(rec);
+  }
+  const indexPath = path.join(dir, 'content_index.json');
+  fs.writeFileSync(indexPath, JSON.stringify(index, null, 2), 'utf8');
+  const guidePath = path.join(dir, 'FABLE_ACCESS_GUIDE.md');
+  const lines = [`# Fable read-only folder access guide`, ``, `Root: ${manifest.root}`, `Files: ${index.files.length}`, `Text files chunked: ${index.textFileCount}`, `Binary files hash-verified: ${index.binaryFileCount}`, `Chunks: ${index.totalChunks}`, `Bytes read from source: ${index.bytesRead}`, ``, `Use content_index.json and chunk files to read full text content. Source folder is read-only and was not modified.`, ``];
+  for (const f of index.files) { lines.push(`- [${f.index}] ${f.rel} :: ${f.readStatus} :: chunks=${f.chunks.length} :: sha256=${f.sha256}`); }
+  fs.writeFileSync(guidePath, lines.join('\n'), 'utf8');
+  return { contentBridgeId: id, indexPath, guidePath, chunksDir, fileCount: index.files.length, textFileCount: index.textFileCount, binaryFileCount: index.binaryFileCount, totalChunks: index.totalChunks, bytesRead: index.bytesRead };
+}
+function readFolderBundleChunk(args = {}) {
+  const idx = JSON.parse(fs.readFileSync(assertReadable(args.indexPath), 'utf8'));
+  const fileRec = idx.files.find(x => x.rel === args.rel || x.index === args.fileIndex);
+  if (!fileRec) throw new Error('file_not_found_in_bundle');
+  const c = fileRec.chunks.find(x => x.chunk === Number(args.chunk || 0));
+  if (!c) throw new Error('chunk_not_found');
+  return { rel: fileRec.rel, fileIndex: fileRec.index, chunk: c.chunk, totalChunks: fileRec.chunks.length, text: fs.readFileSync(assertReadable(c.path), 'utf8'), chunkPath: c.path };
+}
+
+
+function searchFolderContentBundle(args = {}) {
+  const idx = JSON.parse(fs.readFileSync(assertReadable(args.indexPath), 'utf8'));
+  const q = String(args.query || '').toLowerCase();
+  const max = Math.min(Number(args.maxResults || 50), 500);
+  const results = [];
+  for (const f of idx.files) {
+    if (f.rel.toLowerCase().includes(q)) results.push({ rel:f.rel, fileIndex:f.index, type:'path', score:1 });
+    for (const ch of f.chunks || []) {
+      if (results.length >= max) break;
+      const text = fs.readFileSync(assertReadable(ch.path), 'utf8');
+      const pos = text.toLowerCase().indexOf(q);
+      if (pos >= 0) results.push({ rel:f.rel, fileIndex:f.index, chunk:ch.chunk, type:'content', pos, preview:text.slice(Math.max(0,pos-160), Math.min(text.length,pos+360)), chunkPath:ch.path });
+    }
+    if (results.length >= max) break;
+  }
+  return { query: args.query, count: results.length, results };
+}
+function createFableFolderHandoff(args = {}) {
+  const content = createReadOnlyFolderContentBundle(args);
+  const promptId = safeId('folder_fable');
+  const promptPath = assertWritable(path.join(resultsDir, `${promptId}_folder_handoff.md`));
+  const prompt = [`ASK_FABLE5 - Read-only folder handoff`, `-NoMap`, ``, `A read-only folder bridge has been prepared.`, `Source folder was not modified.`, `Content index: ${content.indexPath}`, `Access guide: ${content.guidePath}`, `Chunks directory: ${content.chunksDir}`, `Files: ${content.fileCount}`, `Text files chunked: ${content.textFileCount}`, `Binary files hash-verified: ${content.binaryFileCount}`, `Total chunks: ${content.totalChunks}`, `Bytes read: ${content.bytesRead}`, ``, `Task: Confirm the bridge is usable. Explain how to query/read any file by content_index and chunk path. Do not request modification of source folder.`].join('\n');
+  fs.writeFileSync(promptPath, prompt, 'utf8');
+  const run = args.runFable === false ? null : runFablePromptFile(promptPath, args.maxOutputChars || 100000);
+  return { ...content, promptPath, fableRun: run };
+}
+function folderExplorer(args = {}) {
+  const folder = assertReadable(args.folderPath);
+  const rel = args.rel ? String(args.rel).replace(/^[\\/]+/,'') : '';
+  const current = assertReadable(path.join(folder, rel));
+  if (!isInside(current, folder)) throw new Error('outside_folder');
+  const st = fs.statSync(current);
+  if (!st.isDirectory()) throw new Error('not_a_directory');
+  const entries = fs.readdirSync(current).map(name => {
+    const p = path.join(current, name); const s = fs.statSync(p);
+    return { name, rel: relUnix(folder,p), type: s.isDirectory()?'dir':'file', size: s.size, mtime: s.mtime.toISOString() };
+  }).sort((a,b)=>a.type.localeCompare(b.type)||a.name.localeCompare(b.name));
+  return { root: folder, rel, count: entries.length, entries };
+}
+
 function listTools() { return [
  { name:'search', title:'Search companion resources', description:'Search registered resources and job result pointers.', inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'fetch', title:'Fetch companion item', description:'Fetch registered text/image/job resource by id.', inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
@@ -369,6 +534,14 @@ function listTools() { return [
  { name:'audit_1000_forward_improvements', title:'Audit 1000 forward improvements', description:'Verify the 1000-item forward improvement backlog structure.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'no_window_startup_info', title:'No-window startup info', description:'Return verified files and instructions for hidden startup.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'create_startup_shortcut_info', title:'Startup shortcut info', description:'Return paths for VBS hidden start, scheduled task install, and stop script.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ 
+ { name:'create_readonly_folder_manifest', title:'Create read-only folder manifest', description:'Recursively inventory and hash every file in a folder without modifying the source.', inputSchema:{type:'object',properties:{folderPath:{type:'string'},maxFiles:{type:'number'}},required:['folderPath']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'audit_readonly_folder_manifest', title:'Audit read-only folder manifest', description:'Re-check file size and SHA256 against a stored read-only manifest.', inputSchema:{type:'object',properties:{manifestPath:{type:'string'}},required:['manifestPath']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'create_readonly_folder_content_bundle', title:'Create read-only folder content bundle', description:'Read every file in a folder read-only, chunk all text files, hash-verify binaries, and store results under connector results.', inputSchema:{type:'object',properties:{folderPath:{type:'string'},manifestPath:{type:'string'},chunkChars:{type:'number'},maxFiles:{type:'number'}},required:[]}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'read_folder_bundle_chunk', title:'Read folder bundle chunk', description:'Read one stored text chunk from a folder content bundle.', inputSchema:{type:'object',properties:{indexPath:{type:'string'},fileIndex:{type:'number'},rel:{type:'string'},chunk:{type:'number'}},required:['indexPath']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'search_folder_content_bundle', title:'Search folder content bundle', description:'Search file names and chunked text content inside a read-only folder content bundle.', inputSchema:{type:'object',properties:{indexPath:{type:'string'},query:{type:'string'},maxResults:{type:'number'}},required:['indexPath','query']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'create_fable_folder_handoff', title:'Create Fable folder handoff', description:'Create a complete read-only folder content bundle and Fable access guide, optionally run Fable on the guide.', inputSchema:{type:'object',properties:{folderPath:{type:'string'},manifestPath:{type:'string'},chunkChars:{type:'number'},maxFiles:{type:'number'},runFable:{type:'boolean'},maxOutputChars:{type:'number'}},required:[]}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'folder_explorer', title:'Folder explorer', description:'List one folder level under an allowed root without modifying files.', inputSchema:{type:'object',properties:{folderPath:{type:'string'},rel:{type:'string'}},required:['folderPath']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'get_job_status', title:'Get job status', description:'Read connector job record.', inputSchema:{type:'object',properties:{jobId:{type:'string'}},required:['jobId']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'list_registered_resources', title:'List registered resources', description:'List pointer/image resources created by this connector.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} }
 ]; }
@@ -426,6 +599,14 @@ async function callTool(name, args={}) {
  if (name==='audit_1000_forward_improvements') return toolResult(auditForwardImprovements());
  if (name==='no_window_startup_info') return toolResult(noWindowStartupInfo());
  if (name==='create_startup_shortcut_info') return toolResult(createStartupShortcutInfo());
+ 
+ if (name==='create_readonly_folder_manifest') return toolResult(createReadOnlyFolderManifest(args));
+ if (name==='audit_readonly_folder_manifest') return toolResult(auditReadOnlyFolderManifest(args));
+ if (name==='create_readonly_folder_content_bundle') return toolResult(createReadOnlyFolderContentBundle(args));
+ if (name==='read_folder_bundle_chunk') return toolResult(readFolderBundleChunk(args));
+ if (name==='search_folder_content_bundle') return toolResult(searchFolderContentBundle(args));
+ if (name==='create_fable_folder_handoff') return toolResult(createFableFolderHandoff(args));
+ if (name==='folder_explorer') return toolResult(folderExplorer(args));
  if (name==='get_job_status') { const f=path.join(jobsDir,`${String(args.jobId)}.json`); if(!fs.existsSync(f)) throw new Error('job_not_found'); return toolResult(JSON.parse(fs.readFileSync(f,'utf8'))); }
  if (name==='list_registered_resources') return toolResult({resources:resourceIndex()});
  throw new Error('unknown_tool');
@@ -433,10 +614,10 @@ async function callTool(name, args={}) {
 
 function listResources() { return [ { uri:'companion://status', name:'Companion Connector status', mimeType:'application/json' }, { uri:'ui://companion/dashboard.html', name:'Companion dashboard', mimeType:'text/html;profile=mcp-app' }, { uri:'companion://mcp-services', name:'21 MCP service catalog', mimeType:'application/json' }, ...resourceIndex().map(r=>({uri:`companion://resource/${r.id}`, name:r.title||r.id, mimeType:(r.type||'').includes('image')?'application/json':'text/plain'})) ]; }
 function readResource(uri) { if(uri==='companion://status') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify({ok:true,root:ROOT,resources:resourceIndex().length,services:MCP_SERVICE_FOLDERS.length},null,2)}]}; if(uri==='ui://companion/dashboard.html') return {contents:[{uri,mimeType:'text/html;profile=mcp-app',text:fs.readFileSync(path.join(webDir,'dashboard.html'),'utf8')}]}; if(uri==='companion://mcp-services') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(serviceCatalog(),null,2)}]}; const m=String(uri).match(/^companion:\/\/resource\/(.+)$/); if(m) return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fetchResource(m[1]),null,2)}]}; throw new Error('resource_not_found'); }
-async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'7.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); return rpc(id,await callTool(name,args||{})); } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
+async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'8.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); return rpc(id,await callTool(name,args||{})); } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
 async function readBody(req){ const chunks=[]; for await (const c of req) chunks.push(c); return Buffer.concat(chunks).toString('utf8'); }
-const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'7.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
-server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v7 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
+const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'8.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
+server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v8 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
 
 
 

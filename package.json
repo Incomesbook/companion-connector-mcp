@@ -1,6 +1,6 @@
 {
   "name": "companion-connector-mcp",
-  "version": "7.0.0",
+  "version": "8.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -15,7 +15,8 @@
     "start:hidden": "wscript.exe CompanionConnector-START-HIDDEN.vbs",
     "stop": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/stop-companion.ps1",
     "test:v7": "node scripts/v7-extra-test.js",
-    "test:windowless": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/test-windowless-start.ps1"
+    "test:windowless": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/test-windowless-start.ps1",
+    "test:v8": "node scripts/v8-folder-bridge-test.js"
   },
   "keywords": [],
   "author": "",

@@ -1,7 +1,8 @@
 {
   "allowedRoots": [
     "J:\\Setup_VcCode_Workspace",
-    "J:\\Setup_VcCode_Workspace\\_AI_CHATS_ОБЩИЕ"
+    "J:\\Setup_VcCode_Workspace\\_AI_CHATS_ОБЩИЕ",
+    "J:\\ПРОЕКТЫ\\G01_All_About_Trading\\G01_P09_All_for_TradingView\\G01_P09_01_Project\\TradingView_INDICATORS\\IGOR_ENTER2\\research_out"
   ],
   "writeRoot": "J:\\Setup_VcCode_Workspace\\S04_Shared_Connections\\S04_02_Shared_MCP_Connections\\MCP_Gateway\\CompanionConnector",
   "mcpFoldersRoot": "J:\\Setup_VcCode_Workspace\\S04_Shared_Connections\\S04_02_Shared_MCP_Connections\\MCP servers",
