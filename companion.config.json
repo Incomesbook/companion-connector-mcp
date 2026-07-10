@@ -4,7 +4,11 @@
     "J:\\Setup_VcCode_Workspace\\_AI_CHATS_ОБЩИЕ"
   ],
   "writeRoot": "J:\\Setup_VcCode_Workspace\\S04_Shared_Connections\\S04_02_Shared_MCP_Connections\\MCP_Gateway\\CompanionConnector",
+  "mcpFoldersRoot": "J:\\Setup_VcCode_Workspace\\S04_Shared_Connections\\S04_02_Shared_MCP_Connections\\MCP servers",
+  "fableJobsRoot": "J:\\Setup_VcCode_Workspace\\S08_Notes_and_Logs\\Fable_Jobs",
   "maxSliceBytes": 200000,
   "maxResultBytes": 2000000,
+  "maxBase64Bytes": 5000000,
+  "maxDirEntries": 5000,
   "mcpProtocolVersion": "2025-06-18"
 }

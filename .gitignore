@@ -10,3 +10,6 @@ tools/*.zip
 tools/SHA256SUMS.txt
 tools/tunnel-client-*/
 profiles/runtime/
+
+selftest.png
+uploads/
