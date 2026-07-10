@@ -2,9 +2,9 @@
 
 Local Companion MCP app for ChatGPT New App custom server connection.
 
-## V3 capabilities
+## V5 capabilities
 
-This version is built for large local work, Fable handoff, screenshots/images, and future 21-service routing.
+This version is built for large local work, Fable handoff, screenshots/images, URL reading, media metadata, and future 21-service routing.
 
 ### Core MCP tools
 
@@ -24,19 +24,43 @@ This version is built for large local work, Fable handoff, screenshots/images, a
 - `ingest_attachment_base64`
 - `create_fable_bundle`
 - `run_fable_bundle`
-- `list_mcp_services`
-- `describe_mcp_service`
+
+### Fable and batch tools
+
+- `create_question_batch`
+- `run_question_batch`
+- `ask_fable_big`
+- `create_fable_improvement_survey`
+- `connector_health_report`
+- `list_jobs`
+- `list_fable_runs`
 - `create_fable_prompt_file`
 - `get_job_status`
 - `list_registered_resources`
+
+### URL/media/handoff tools
+
+- `fetch_url_text`
+- `extract_links_from_url`
+- `create_url_snapshot_job`
+- `register_video_pointer`
+- `create_media_metadata_job`
+- `create_handoff_queue_item`
+- `list_handoff_queue`
+- `list_mcp_services`
+- `describe_mcp_service`
 
 ## What it solves
 
 - Big files are referenced by path instead of pasted into chat.
 - Large questions can be written into local prompt bundles for Fable.
+- Multiple questions can be batched into one file-backed request.
+- URLs can be fetched into bounded snapshots.
+- Links can be extracted from a page.
 - Attachments can be stored as connector resources.
 - Screenshots/images can be registered by path or small base64 payload.
-- Fable can be given a bundle prompt file with transcript, attachment pointers, full text sections, image metadata, and hashes.
+- Media/video files can be registered and inspected with ffprobe when available.
+- Fable can be given a bundle prompt file with transcript, attachment pointers, full text sections, image metadata, media metadata, and hashes.
 - 21 planned MCP service folders are exposed as a service catalog.
 - Outputs are written to `results/` and read by slice.
 
@@ -52,23 +76,26 @@ Default endpoint:
 http://127.0.0.1:8788/mcp
 ```
 
-## Self-test
+## Tests
 
 ```powershell
 npm test
+npm run test:fable
+npm run test:v4
+npm run test:v5
 ```
 
-V3 self-test covers 23 checks including transcript ingest, attachment ingest, Fable bundle creation, image pointer, base64 image ingest, directory inventory, digest jobs, service catalog, and widget resource MIME.
-
-## Fable handoff test
-
-Start the server, then run:
+## Hidden PowerShell 7 startup
 
 ```powershell
-npm run test:fable
+.\scripts\start-hidden.ps1
 ```
 
-This creates a local transcript resource, builds a Fable bundle prompt file, calls AskFable through the local wrapper, and stores the full result under `results/`.
+Stop by port:
+
+```powershell
+.\scripts\stop-companion.ps1
+```
 
 ## Tunnel setup
 
@@ -83,7 +110,3 @@ See `TUNNEL_SETUP.md`.
 - Large outputs are written to `results/` and read by slice.
 - Calls are logged by hash, not full arguments.
 - Widget resource uses `text/html;profile=mcp-app`.
-
-## Current limitation
-
-The app can ingest transcript text and attachments that are provided to the tool or available as local files. It cannot magically read a private ChatGPT conversation unless ChatGPT exposes that content to the app through a tool call, export, local file, or pasted transcript.

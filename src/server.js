@@ -1,4 +1,5 @@
 import http from 'node:http';
+import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -190,6 +191,67 @@ function askFableBig(args = {}) {
   return { ...batch, fableRun: run };
 }
 
+
+function ensureUrlAllowed(rawUrl) {
+  const u = new URL(String(rawUrl));
+  if (!['http:', 'https:'].includes(u.protocol)) throw new Error('url_protocol_not_allowed');
+  if (['localhost','127.0.0.1','0.0.0.0','::1'].includes(u.hostname)) throw new Error('loopback_url_blocked');
+  return u.toString();
+}
+async function fetchUrlLimited(rawUrl, limit = 300000) {
+  const url = ensureUrlAllowed(rawUrl);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(url, { signal: controller.signal, redirect: 'follow', headers: { 'user-agent': 'CompanionConnector/5.0' } });
+    const contentType = res.headers.get('content-type') || '';
+    const ab = await res.arrayBuffer();
+    const buf = Buffer.from(ab).subarray(0, Math.min(Number(limit)||300000, Number(CFG.maxSliceBytes)||200000));
+    return { url, status: res.status, contentType, bytes: buf.length, truncated: Buffer.byteLength(Buffer.from(ab)) > buf.length, text: buf.toString('utf8') };
+  } finally { clearTimeout(timer); }
+}
+function extractLinks(html, baseUrl) {
+  const out = [];
+  const re = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m; while ((m = re.exec(String(html))) && out.length < 200) {
+    try { out.push({ url: new URL(m[1], baseUrl).toString(), text: String(m[2]).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,200) }); } catch {}
+  }
+  return out;
+}
+async function createUrlSnapshot(args = {}) {
+  const snap = await fetchUrlLimited(args.url, args.limit || 300000);
+  const id = safeId('url');
+  const f = assertWritable(path.join(uploadsDir, `${id}.txt`));
+  fs.writeFileSync(f, snap.text, 'utf8');
+  saveResource({ id, title: args.title || snap.url, path: f, type: 'url_snapshot', url: snap.url, status: snap.status, contentType: snap.contentType, createdAt: new Date().toISOString() });
+  return { id, url: snap.url, status: snap.status, contentType: snap.contentType, bytes: snap.bytes, truncated: snap.truncated, links: extractLinks(snap.text, snap.url).slice(0, 50) };
+}
+function mediaMetadata(filePath) {
+  const full = assertReadable(filePath);
+  const st = fs.statSync(full);
+  if (!st.isFile()) throw new Error('not_a_file');
+  const base = { path: full, size: st.size, mtime: st.mtime.toISOString(), sha256: sha256File(full), ext: path.extname(full).toLowerCase() };
+  const ff = spawnSync('ffprobe', ['-v','error','-show_format','-show_streams','-print_format','json', full], { encoding:'utf8', timeout:30000 });
+  if (ff.status === 0 && ff.stdout) {
+    try { return { ...base, ffprobeAvailable: true, ffprobe: JSON.parse(ff.stdout) }; } catch { return { ...base, ffprobeAvailable: true, raw: ff.stdout.slice(0,10000) }; }
+  }
+  return { ...base, ffprobeAvailable: false, note: 'ffprobe not available or failed', stderr: (ff.stderr || '').slice(0,1000) };
+}
+function createHandoffQueueItem(args = {}) {
+  const id = safeId('handoff');
+  const dir = assertWritable(path.join(resultsDir, 'handoff_queue'));
+  fs.mkdirSync(dir, { recursive: true });
+  const item = { id, status: 'queued', title: args.title || id, body: args.body || '', resourceIds: args.resourceIds || [], filePaths: args.filePaths || [], createdAt: new Date().toISOString() };
+  const file = path.join(dir, `${id}.json`);
+  fs.writeFileSync(file, JSON.stringify(item, null, 2), 'utf8');
+  return { id, queuePath: file, status: item.status };
+}
+function listHandoffQueue(limit = 100) {
+  const dir = path.join(resultsDir, 'handoff_queue');
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).filter(x=>x.endsWith('.json')).sort().slice(-Math.min(Number(limit)||100,500)).map(f=>JSON.parse(fs.readFileSync(path.join(dir,f),'utf8')));
+}
+
 function listTools() { return [
  { name:'search', title:'Search companion resources', description:'Search registered resources and job result pointers.', inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'fetch', title:'Fetch companion item', description:'Fetch registered text/image/job resource by id.', inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
@@ -218,6 +280,14 @@ function listTools() { return [
  { name:'connector_health_report', title:'Connector health report', description:'Return connector capability and artifact counts.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'list_jobs', title:'List jobs', description:'List recent connector job records.', inputSchema:{type:'object',properties:{limit:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'list_fable_runs', title:'List Fable runs', description:'List recent stored Fable run outputs.', inputSchema:{type:'object',properties:{limit:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ 
+ { name:'fetch_url_text', title:'Fetch URL text', description:'Fetch bounded text from an http/https URL for read-only inspection.', inputSchema:{type:'object',properties:{url:{type:'string'},limit:{type:'number'}},required:['url']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'extract_links_from_url', title:'Extract links from URL', description:'Fetch a page and return bounded link list.', inputSchema:{type:'object',properties:{url:{type:'string'},limit:{type:'number'}},required:['url']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'create_url_snapshot_job', title:'Create URL snapshot job', description:'Fetch a URL into a local snapshot resource and return links.', inputSchema:{type:'object',properties:{url:{type:'string'},title:{type:'string'},limit:{type:'number'}},required:['url']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'register_video_pointer', title:'Register video pointer', description:'Register a local media file pointer and metadata.', inputSchema:{type:'object',properties:{filePath:{type:'string'},title:{type:'string'}},required:['filePath']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'create_media_metadata_job', title:'Create media metadata job', description:'Create a media metadata job using ffprobe when available.', inputSchema:{type:'object',properties:{filePath:{type:'string'}},required:['filePath']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'create_handoff_queue_item', title:'Create handoff queue item', description:'Create a local handoff queue item without touching source folders.', inputSchema:{type:'object',properties:{title:{type:'string'},body:{type:'string'},resourceIds:{type:'array'},filePaths:{type:'array'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'list_handoff_queue', title:'List handoff queue', description:'List local connector handoff queue items.', inputSchema:{type:'object',properties:{limit:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'get_job_status', title:'Get job status', description:'Read connector job record.', inputSchema:{type:'object',properties:{jobId:{type:'string'}},required:['jobId']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'list_registered_resources', title:'List registered resources', description:'List pointer/image resources created by this connector.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} }
 ]; }
@@ -255,6 +325,14 @@ async function callTool(name, args={}) {
  if (name==='connector_health_report') return toolResult(connectorHealthReport());
  if (name==='list_jobs') return toolResult({ jobs: listJobs(args.limit) });
  if (name==='list_fable_runs') return toolResult({ runs: listFableRuns(args.limit) });
+ 
+ if (name==='fetch_url_text') { const u = await fetchUrlLimited(args.url, args.limit); return toolResult(u); }
+ if (name==='extract_links_from_url') { const u = await fetchUrlLimited(args.url, args.limit); return toolResult({ url: u.url, status: u.status, links: extractLinks(u.text, u.url) }); }
+ if (name==='create_url_snapshot_job') return toolResult(await createUrlSnapshot(args));
+ if (name==='register_video_pointer') { const meta = mediaMetadata(args.filePath); const id = safeId('media'); const rec = saveResource({ id, title: args.title || path.basename(meta.path), path: meta.path, type:'media_pointer', metadata: meta, createdAt: new Date().toISOString() }); return toolResult({ id: rec.id, title: rec.title, metadata: meta }); }
+ if (name==='create_media_metadata_job') return toolResult(makeJob('media_metadata', args.filePath, mediaMetadata(args.filePath)));
+ if (name==='create_handoff_queue_item') return toolResult(createHandoffQueueItem(args));
+ if (name==='list_handoff_queue') return toolResult({ items: listHandoffQueue(args.limit) });
  if (name==='get_job_status') { const f=path.join(jobsDir,`${String(args.jobId)}.json`); if(!fs.existsSync(f)) throw new Error('job_not_found'); return toolResult(JSON.parse(fs.readFileSync(f,'utf8'))); }
  if (name==='list_registered_resources') return toolResult({resources:resourceIndex()});
  throw new Error('unknown_tool');
@@ -262,9 +340,9 @@ async function callTool(name, args={}) {
 
 function listResources() { return [ { uri:'companion://status', name:'Companion Connector status', mimeType:'application/json' }, { uri:'ui://companion/dashboard.html', name:'Companion dashboard', mimeType:'text/html;profile=mcp-app' }, { uri:'companion://mcp-services', name:'21 MCP service catalog', mimeType:'application/json' }, ...resourceIndex().map(r=>({uri:`companion://resource/${r.id}`, name:r.title||r.id, mimeType:(r.type||'').includes('image')?'application/json':'text/plain'})) ]; }
 function readResource(uri) { if(uri==='companion://status') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify({ok:true,root:ROOT,resources:resourceIndex().length,services:MCP_SERVICE_FOLDERS.length},null,2)}]}; if(uri==='ui://companion/dashboard.html') return {contents:[{uri,mimeType:'text/html;profile=mcp-app',text:fs.readFileSync(path.join(webDir,'dashboard.html'),'utf8')}]}; if(uri==='companion://mcp-services') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(serviceCatalog(),null,2)}]}; const m=String(uri).match(/^companion:\/\/resource\/(.+)$/); if(m) return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fetchResource(m[1]),null,2)}]}; throw new Error('resource_not_found'); }
-async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'4.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); return rpc(id,await callTool(name,args||{})); } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
+async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'5.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); return rpc(id,await callTool(name,args||{})); } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
 async function readBody(req){ const chunks=[]; for await (const c of req) chunks.push(c); return Buffer.concat(chunks).toString('utf8'); }
-const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'4.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
+const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'5.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
 server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v2 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
 
 
