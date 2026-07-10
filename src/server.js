@@ -300,6 +300,27 @@ function createDebugSnapshot() {
   return { snapshotId: id, resultPath };
 }
 
+
+function loadForwardImprovements(limit = 1000) {
+  const f = path.join(ROOT, 'docs', 'V7_1000_FORWARD_IMPROVEMENTS.json');
+  const data = JSON.parse(fs.readFileSync(f, 'utf8'));
+  const n = Math.min(Number(limit)||1000, 1000);
+  return { ...data, items: data.items.slice(0, n) };
+}
+function auditForwardImprovements() {
+  const data = loadForwardImprovements(1000);
+  const ids = new Set(data.items.map(x => x.id));
+  const categories = new Set(data.items.map(x => x.category));
+  return { ok: data.count === 1000 && ids.size === 1000 && categories.size >= 10 && data.type.includes('not_claimed_implemented'), count: data.count, uniqueIds: ids.size, categories: categories.size, type: data.type };
+}
+function noWindowStartupInfo() {
+  const files = ['CompanionConnector-START-HIDDEN.vbs','scripts/start-background.ps1','scripts/install-hidden-task.ps1','scripts/uninstall-hidden-task.ps1','scripts/stop-companion.ps1'];
+  return { ok: files.every(f => fs.existsSync(path.join(ROOT, f))), files: files.map(f => ({ path: path.join(ROOT, f), exists: fs.existsSync(path.join(ROOT, f)) })), recommended: 'Double-click CompanionConnector-START-HIDDEN.vbs or install scripts/install-hidden-task.ps1. Do not use manual npm start for daily use.' };
+}
+function createStartupShortcutInfo() {
+  return { shortcut: path.join(ROOT, 'CompanionConnector-START-HIDDEN.vbs'), taskInstall: path.join(ROOT, 'scripts', 'install-hidden-task.ps1'), stop: path.join(ROOT, 'scripts', 'stop-companion.ps1') };
+}
+
 function listTools() { return [
  { name:'search', title:'Search companion resources', description:'Search registered resources and job result pointers.', inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'fetch', title:'Fetch companion item', description:'Fetch registered text/image/job resource by id.', inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
@@ -343,6 +364,11 @@ function listTools() { return [
  { name:'runtime_metrics', title:'Runtime metrics', description:'Return runtime memory, uptime, process and platform metrics.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'validate_connector_config', title:'Validate connector config', description:'Validate required connector configuration keys.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'create_debug_snapshot', title:'Create debug snapshot', description:'Create a local debug snapshot result file.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ 
+ { name:'list_1000_forward_improvements', title:'List 1000 forward improvements', description:'List the V7 1000-item forward improvement backlog. Items are planned, not falsely marked implemented.', inputSchema:{type:'object',properties:{limit:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'audit_1000_forward_improvements', title:'Audit 1000 forward improvements', description:'Verify the 1000-item forward improvement backlog structure.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'no_window_startup_info', title:'No-window startup info', description:'Return verified files and instructions for hidden startup.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'create_startup_shortcut_info', title:'Startup shortcut info', description:'Return paths for VBS hidden start, scheduled task install, and stop script.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'get_job_status', title:'Get job status', description:'Read connector job record.', inputSchema:{type:'object',properties:{jobId:{type:'string'}},required:['jobId']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'list_registered_resources', title:'List registered resources', description:'List pointer/image resources created by this connector.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} }
 ]; }
@@ -395,6 +421,11 @@ async function callTool(name, args={}) {
  if (name==='runtime_metrics') return toolResult(runtimeMetrics());
  if (name==='validate_connector_config') return toolResult(validateConnectorConfig());
  if (name==='create_debug_snapshot') return toolResult(createDebugSnapshot());
+ 
+ if (name==='list_1000_forward_improvements') return toolResult(loadForwardImprovements(args.limit));
+ if (name==='audit_1000_forward_improvements') return toolResult(auditForwardImprovements());
+ if (name==='no_window_startup_info') return toolResult(noWindowStartupInfo());
+ if (name==='create_startup_shortcut_info') return toolResult(createStartupShortcutInfo());
  if (name==='get_job_status') { const f=path.join(jobsDir,`${String(args.jobId)}.json`); if(!fs.existsSync(f)) throw new Error('job_not_found'); return toolResult(JSON.parse(fs.readFileSync(f,'utf8'))); }
  if (name==='list_registered_resources') return toolResult({resources:resourceIndex()});
  throw new Error('unknown_tool');
@@ -402,10 +433,10 @@ async function callTool(name, args={}) {
 
 function listResources() { return [ { uri:'companion://status', name:'Companion Connector status', mimeType:'application/json' }, { uri:'ui://companion/dashboard.html', name:'Companion dashboard', mimeType:'text/html;profile=mcp-app' }, { uri:'companion://mcp-services', name:'21 MCP service catalog', mimeType:'application/json' }, ...resourceIndex().map(r=>({uri:`companion://resource/${r.id}`, name:r.title||r.id, mimeType:(r.type||'').includes('image')?'application/json':'text/plain'})) ]; }
 function readResource(uri) { if(uri==='companion://status') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify({ok:true,root:ROOT,resources:resourceIndex().length,services:MCP_SERVICE_FOLDERS.length},null,2)}]}; if(uri==='ui://companion/dashboard.html') return {contents:[{uri,mimeType:'text/html;profile=mcp-app',text:fs.readFileSync(path.join(webDir,'dashboard.html'),'utf8')}]}; if(uri==='companion://mcp-services') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(serviceCatalog(),null,2)}]}; const m=String(uri).match(/^companion:\/\/resource\/(.+)$/); if(m) return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fetchResource(m[1]),null,2)}]}; throw new Error('resource_not_found'); }
-async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'6.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); return rpc(id,await callTool(name,args||{})); } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
+async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'7.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); return rpc(id,await callTool(name,args||{})); } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
 async function readBody(req){ const chunks=[]; for await (const c of req) chunks.push(c); return Buffer.concat(chunks).toString('utf8'); }
-const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'6.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
-server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v2 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
+const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'7.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
+server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v7 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
 
 
 

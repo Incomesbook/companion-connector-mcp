@@ -1,16 +1,21 @@
 {
-  "name": "companionconnector",
-  "version": "6.0.0",
+  "name": "companion-connector-mcp",
+  "version": "7.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
     "test": "node scripts/selftest.js",
-    "start": "node src/server.js",
+    "start": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/start-background.ps1",
     "dev": "node src/server.js",
     "test:fable": "node scripts/fable-handoff-test.js",
     "test:v4": "node scripts/v4-extra-test.js",
     "test:v5": "node scripts/v5-extra-test.js",
-    "test:v6": "node scripts/v6-extra-test.js"
+    "test:v6": "node scripts/v6-extra-test.js",
+    "start:foreground": "node src/server.js",
+    "start:hidden": "wscript.exe CompanionConnector-START-HIDDEN.vbs",
+    "stop": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/stop-companion.ps1",
+    "test:v7": "node scripts/v7-extra-test.js",
+    "test:windowless": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/test-windowless-start.ps1"
   },
   "keywords": [],
   "author": "",

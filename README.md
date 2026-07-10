@@ -132,3 +132,43 @@ Test:
 ```powershell
 npm run test:v6
 ```
+
+## V7 no-window startup and 1000 forward improvements
+
+Manual `npm start` no longer keeps a visible server console open. It starts the connector in the background through PowerShell 7.
+
+Best daily start method with no popup:
+
+```powershell
+wscript.exe .\CompanionConnector-START-HIDDEN.vbs
+```
+
+Or double-click:
+
+```text
+CompanionConnector-START-HIDDEN.vbs
+```
+
+Install hidden startup at Windows logon:
+
+```powershell
+.\scripts\install-hidden-task.ps1
+```
+
+Remove hidden startup task:
+
+```powershell
+.\scripts\uninstall-hidden-task.ps1
+```
+
+V7 also adds a 1000-item forward improvement backlog. It is explicitly not falsely marked as implemented:
+
+- `docs/V7_1000_FORWARD_IMPROVEMENTS.md`
+- `docs/V7_1000_FORWARD_IMPROVEMENTS.json`
+
+V7 tests:
+
+```powershell
+npm run test:v7
+npm run test:windowless
+```
