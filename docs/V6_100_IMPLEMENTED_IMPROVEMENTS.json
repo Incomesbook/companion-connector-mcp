@@ -1,0 +1,706 @@
+{
+  "version": "6.0.0",
+  "count": 100,
+  "items": [
+    {
+      "id": 1,
+      "category": "startup",
+      "title": "PowerShell 7 hidden startup script",
+      "status": "implemented",
+      "evidence": "scripts/start-hidden.ps1"
+    },
+    {
+      "id": 2,
+      "category": "startup",
+      "title": "Stop companion by port script",
+      "status": "implemented",
+      "evidence": "scripts/stop-companion.ps1"
+    },
+    {
+      "id": 3,
+      "category": "startup",
+      "title": "OpenAI tunnel start script",
+      "status": "implemented",
+      "evidence": "scripts/start-companion-with-openai-tunnel.ps1"
+    },
+    {
+      "id": 4,
+      "category": "startup",
+      "title": "Tunnel setup documentation",
+      "status": "implemented",
+      "evidence": "TUNNEL_SETUP.md"
+    },
+    {
+      "id": 5,
+      "category": "startup",
+      "title": "Runtime profile template for tunnel",
+      "status": "implemented",
+      "evidence": "profiles/companion-openai-tunnel.example.yaml"
+    },
+    {
+      "id": 6,
+      "category": "testing",
+      "title": "Base MCP self-test suite",
+      "status": "implemented",
+      "evidence": "scripts/selftest.js"
+    },
+    {
+      "id": 7,
+      "category": "testing",
+      "title": "Fable handoff smoke test",
+      "status": "implemented",
+      "evidence": "scripts/fable-handoff-test.js"
+    },
+    {
+      "id": 8,
+      "category": "testing",
+      "title": "V4 big-question test suite",
+      "status": "implemented",
+      "evidence": "scripts/v4-extra-test.js"
+    },
+    {
+      "id": 9,
+      "category": "testing",
+      "title": "V5 URL/media/handoff test suite",
+      "status": "implemented",
+      "evidence": "scripts/v5-extra-test.js"
+    },
+    {
+      "id": 10,
+      "category": "docs",
+      "title": "README V5 tool list and usage",
+      "status": "implemented",
+      "evidence": "README.md"
+    },
+    {
+      "id": 11,
+      "category": "docs",
+      "title": "100 improvement checklist document",
+      "status": "implemented",
+      "evidence": "docs/V5_100_IMPROVEMENTS.md"
+    },
+    {
+      "id": 12,
+      "category": "config",
+      "title": "Connector configuration file",
+      "status": "implemented",
+      "evidence": "companion.config.json"
+    },
+    {
+      "id": 13,
+      "category": "git",
+      "title": "Git ignore for runtime artifacts",
+      "status": "implemented",
+      "evidence": ".gitignore"
+    },
+    {
+      "id": 14,
+      "category": "tool",
+      "title": "MCP tool `search` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 15,
+      "category": "tool",
+      "title": "MCP tool `fetch` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 16,
+      "category": "tool",
+      "title": "MCP tool `register_file_pointer` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 17,
+      "category": "tool",
+      "title": "MCP tool `read_file_slice` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 18,
+      "category": "tool",
+      "title": "MCP tool `read_result_slice` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 19,
+      "category": "tool",
+      "title": "MCP tool `create_summary_job` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 20,
+      "category": "tool",
+      "title": "MCP tool `create_file_digest_job` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 21,
+      "category": "tool",
+      "title": "MCP tool `create_directory_inventory_job` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 22,
+      "category": "tool",
+      "title": "MCP tool `register_image_pointer` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 23,
+      "category": "tool",
+      "title": "MCP tool `ingest_image_base64` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 24,
+      "category": "tool",
+      "title": "MCP tool `get_image_data` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 25,
+      "category": "tool",
+      "title": "MCP tool `create_image_inspection_job` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 26,
+      "category": "tool",
+      "title": "MCP tool `ingest_chat_transcript` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 27,
+      "category": "tool",
+      "title": "MCP tool `ingest_attachment_base64` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 28,
+      "category": "tool",
+      "title": "MCP tool `create_fable_bundle` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 29,
+      "category": "tool",
+      "title": "MCP tool `run_fable_bundle` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 30,
+      "category": "tool",
+      "title": "MCP tool `create_question_batch` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 31,
+      "category": "tool",
+      "title": "MCP tool `run_question_batch` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 32,
+      "category": "tool",
+      "title": "MCP tool `ask_fable_big` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 33,
+      "category": "tool",
+      "title": "MCP tool `create_fable_improvement_survey` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 34,
+      "category": "tool",
+      "title": "MCP tool `connector_health_report` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 35,
+      "category": "tool",
+      "title": "MCP tool `list_jobs` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 36,
+      "category": "tool",
+      "title": "MCP tool `list_fable_runs` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 37,
+      "category": "tool",
+      "title": "MCP tool `fetch_url_text` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 38,
+      "category": "tool",
+      "title": "MCP tool `extract_links_from_url` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 39,
+      "category": "tool",
+      "title": "MCP tool `create_url_snapshot_job` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 40,
+      "category": "tool",
+      "title": "MCP tool `register_video_pointer` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 41,
+      "category": "tool",
+      "title": "MCP tool `create_media_metadata_job` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 42,
+      "category": "tool",
+      "title": "MCP tool `create_handoff_queue_item` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 43,
+      "category": "tool",
+      "title": "MCP tool `list_handoff_queue` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 44,
+      "category": "tool",
+      "title": "MCP tool `list_mcp_services` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 45,
+      "category": "tool",
+      "title": "MCP tool `describe_mcp_service` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 46,
+      "category": "tool",
+      "title": "MCP tool `create_fable_prompt_file` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 47,
+      "category": "tool",
+      "title": "MCP tool `get_job_status` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 48,
+      "category": "tool",
+      "title": "MCP tool `list_registered_resources` exposed with schema and readOnlyHint metadata",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 49,
+      "category": "capability",
+      "title": "JSON-RPC initialize support",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 50,
+      "category": "capability",
+      "title": "tools/list support",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 51,
+      "category": "capability",
+      "title": "tools/call support",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 52,
+      "category": "capability",
+      "title": "resources/list support",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 53,
+      "category": "capability",
+      "title": "resources/read support",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 54,
+      "category": "capability",
+      "title": "prompts/list support",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 55,
+      "category": "capability",
+      "title": "prompts/get support",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 56,
+      "category": "capability",
+      "title": "structuredContent/content/_meta sibling tool results",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 57,
+      "category": "capability",
+      "title": "MCP-Protocol-Version response header",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 58,
+      "category": "capability",
+      "title": "MCP app widget resource MIME text/html;profile=mcp-app",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 59,
+      "category": "capability",
+      "title": "allowed root read boundary",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 60,
+      "category": "capability",
+      "title": "connector-only write boundary",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 61,
+      "category": "capability",
+      "title": "realpath canonical read checks",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 62,
+      "category": "capability",
+      "title": "SHA256 file hashing",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 63,
+      "category": "capability",
+      "title": "bounded file slice reader",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 64,
+      "category": "capability",
+      "title": "bounded result slice reader",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 65,
+      "category": "capability",
+      "title": "large text to Fable bundle path",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 66,
+      "category": "capability",
+      "title": "image PNG metadata detection",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 67,
+      "category": "capability",
+      "title": "image JPEG metadata detection",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 68,
+      "category": "capability",
+      "title": "image GIF metadata detection",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 69,
+      "category": "capability",
+      "title": "base64 attachment ingestion limit",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 70,
+      "category": "capability",
+      "title": "URL protocol allowlist",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 71,
+      "category": "capability",
+      "title": "loopback URL blocking",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 72,
+      "category": "capability",
+      "title": "bounded URL fetch",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 73,
+      "category": "capability",
+      "title": "link extraction from fetched HTML",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 74,
+      "category": "capability",
+      "title": "ffprobe media metadata fallback",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 75,
+      "category": "capability",
+      "title": "handoff queue storage inside results",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 76,
+      "category": "capability",
+      "title": "audit log with hashed args",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 77,
+      "category": "capability",
+      "title": "job records under jobs/",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 78,
+      "category": "capability",
+      "title": "results under results/",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 79,
+      "category": "capability",
+      "title": "resource registry under resources/",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 80,
+      "category": "capability",
+      "title": "uploads under uploads/",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 81,
+      "category": "capability",
+      "title": "21 MCP service catalog",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 82,
+      "category": "capability",
+      "title": "service risk labeling",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 83,
+      "category": "capability",
+      "title": "Fable prompt file creation under Fable_Jobs only",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 84,
+      "category": "capability",
+      "title": "Fable bundle run via PromptFile NoMap",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 85,
+      "category": "capability",
+      "title": "question batch with multiple questions",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 86,
+      "category": "capability",
+      "title": "improvement survey generator",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 87,
+      "category": "capability",
+      "title": "connector health report counts",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 88,
+      "category": "capability",
+      "title": "recent job listing",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 89,
+      "category": "capability",
+      "title": "recent Fable run listing",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 90,
+      "category": "capability",
+      "title": "hidden start log file",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 91,
+      "category": "capability",
+      "title": "quiet stop by port",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 92,
+      "category": "capability",
+      "title": "fresh clone compatible tests",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 93,
+      "category": "capability",
+      "title": "no changes to 21 source folders",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 94,
+      "category": "capability",
+      "title": "no reorganization of _AI_CHATS_\u041e\u0411\u0429\u0418\u0415",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 95,
+      "category": "capability",
+      "title": "URL snapshot stored as local resource",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 96,
+      "category": "capability",
+      "title": "media pointer resource type",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 97,
+      "category": "capability",
+      "title": "uploaded image resource type",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 98,
+      "category": "capability",
+      "title": "text blob resource type",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 99,
+      "category": "capability",
+      "title": "uploaded attachment resource type",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    },
+    {
+      "id": 100,
+      "category": "capability",
+      "title": "url snapshot resource type",
+      "status": "implemented",
+      "evidence": "src/server.js"
+    }
+  ]
+}

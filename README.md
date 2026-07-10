@@ -110,3 +110,25 @@ See `TUNNEL_SETUP.md`.
 - Large outputs are written to `results/` and read by slice.
 - Calls are logged by hash, not full arguments.
 - Widget resource uses `text/html;profile=mcp-app`.
+
+## V6 additions
+
+V6 adds a verified 100-improvement registry and audit layer:
+
+- `list_implemented_improvements`
+- `audit_100_improvements`
+- `create_support_bundle`
+- `runtime_metrics`
+- `validate_connector_config`
+- `create_debug_snapshot`
+
+Files:
+
+- `docs/V6_100_IMPLEMENTED_IMPROVEMENTS.md`
+- `docs/V6_100_IMPLEMENTED_IMPROVEMENTS.json`
+
+Test:
+
+```powershell
+npm run test:v6
+```

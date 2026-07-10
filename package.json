@@ -1,6 +1,6 @@
 {
   "name": "companionconnector",
-  "version": "5.0.0",
+  "version": "6.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -9,7 +9,8 @@
     "dev": "node src/server.js",
     "test:fable": "node scripts/fable-handoff-test.js",
     "test:v4": "node scripts/v4-extra-test.js",
-    "test:v5": "node scripts/v5-extra-test.js"
+    "test:v5": "node scripts/v5-extra-test.js",
+    "test:v6": "node scripts/v6-extra-test.js"
   },
   "keywords": [],
   "author": "",
