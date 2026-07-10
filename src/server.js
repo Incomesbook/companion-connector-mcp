@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -39,6 +40,94 @@ function detectImage(file) { const full = assertReadable(file); const st = fs.st
 function safeBase64ToBuffer(data) { const s = String(data || '').replace(/^data:[^;]+;base64,/, ''); const buf = Buffer.from(s, 'base64'); if (buf.length > Number(CFG.maxBase64Bytes || 5000000)) throw new Error('base64_too_large'); return buf; }
 function serviceCatalog() { const root = CFG.mcpFoldersRoot; return MCP_SERVICE_FOLDERS.map(name => { const p = path.join(root, name); const exists = fs.existsSync(p); return { service_id: name.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,''), folder: name, path: p, exists, risk: /api_key|commander|control|bridge|runtime|powershell|npm/i.test(name) ? 'high' : 'medium', public_surface: 'read_only_status_docs_search_fetch' }; }); }
 
+
+function ingestText(title, text) {
+  const id = safeId('txt');
+  const file = assertWritable(path.join(uploadsDir, `${id}.txt`));
+  fs.writeFileSync(file, String(text || ''), 'utf8');
+  const st = fs.statSync(file);
+  return saveResource({ id, title: title || id, path: file, type: 'text_blob', size: st.size, createdAt: new Date().toISOString() });
+}
+function ingestAttachment(filename, mime, base64) {
+  const buf = safeBase64ToBuffer(base64);
+  const safeName = String(filename || 'attachment.bin').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120);
+  const id = safeId('att');
+  const file = assertWritable(path.join(uploadsDir, `${id}_${safeName}`));
+  fs.writeFileSync(file, buf);
+  const rec = saveResource({ id, title: safeName, path: file, type: String(mime || '').startsWith('image/') ? 'uploaded_image' : 'uploaded_attachment', mime: mime || 'application/octet-stream', size: buf.length, createdAt: new Date().toISOString() });
+  return rec;
+}
+function isTextLike(file) {
+  const ext = path.extname(file).toLowerCase();
+  return ['.txt','.md','.json','.jsonl','.csv','.tsv','.js','.ts','.cjs','.mjs','.ps1','.cmd','.bat','.html','.css','.xml','.yaml','.yml','.log'].includes(ext);
+}
+function readWholeTextBounded(file, maxBytes) {
+  const full = assertReadable(file);
+  const st = fs.statSync(full);
+  const max = Math.max(1, Math.min(Number(maxBytes) || st.size, st.size));
+  const fd = fs.openSync(full, 'r');
+  const buf = Buffer.alloc(max);
+  const n = fs.readSync(fd, buf, 0, max, 0);
+  fs.closeSync(fd);
+  return { path: full, size: st.size, bytes: n, text: buf.subarray(0, n).toString('utf8'), truncated: n < st.size };
+}
+function createFableBundle(args = {}) {
+  const id = safeId('bundle');
+  const dir = assertWritable(path.join(resultsDir, id));
+  fs.mkdirSync(dir, { recursive: true });
+  const title = args.title || 'Companion Fable bundle';
+  const question = args.question || '';
+  const maxPerFile = Number(args.maxBytesPerFile || 1000000);
+  const includeFullText = args.includeFullText !== false;
+  const includeImageData = !!args.includeImageData;
+  const files = [];
+  const resourceIds = Array.isArray(args.resourceIds) ? args.resourceIds : [];
+  const filePaths = Array.isArray(args.filePaths) ? args.filePaths : [];
+  for (const rid of resourceIds) { const r = resourceIndex().find(x => x.id === rid); if (r) files.push(r.path); }
+  for (const p of filePaths) files.push(p);
+  const unique = [...new Set(files)].map(assertReadable);
+  const md = [];
+  md.push(`ASK_FABLE5 - ${title}`);
+  md.push('-NoMap');
+  md.push('');
+  md.push('Question:');
+  md.push(question);
+  md.push('');
+  md.push('Bundle rules: use the attached local file sections and file paths. Source files are read-only. Ask for exact additional paths if needed.');
+  md.push('');
+  md.push(`Files: ${unique.length}`);
+  for (const file of unique) {
+    const st = fs.statSync(file);
+    md.push(''); md.push(`## FILE ${file}`); md.push(`size=${st.size} mtime=${st.mtime.toISOString()} sha256=${st.isFile()?sha256File(file):'directory'}`);
+    if (st.isFile() && includeFullText && isTextLike(file)) {
+      const part = readWholeTextBounded(file, maxPerFile);
+      md.push(`included_bytes=${part.bytes} truncated=${part.truncated}`); md.push('```text'); md.push(part.text); md.push('```');
+    } else if (st.isFile() && /\.(png|jpe?g|gif)$/i.test(file)) {
+      const meta = detectImage(file); md.push(`image_meta=${JSON.stringify(meta)}`);
+      if (includeImageData && st.size <= Number(CFG.maxBase64Bytes || 5000000)) md.push(`data_uri=data:${meta.mime};base64,${fs.readFileSync(file).toString('base64')}`);
+    } else if (st.isDirectory()) {
+      md.push(JSON.stringify(inventoryDir(file, 200), null, 2));
+    } else {
+      md.push('not_included_binary_or_disabled_full_text');
+    }
+  }
+  const bundlePath = path.join(dir, 'fable_bundle_prompt.md');
+  fs.writeFileSync(bundlePath, md.join('\n'), 'utf8');
+  const manifest = { id, title, question, bundlePath, files: unique, createdAt: new Date().toISOString() };
+  const manifestPath = path.join(dir, 'manifest.json');
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+  return { bundleId: id, bundlePath, manifestPath, files: unique.length };
+}
+function runFablePromptFile(promptPath, maxOutputChars = 200000) {
+  const full = assertReadable(promptPath);
+  const ps1 = 'J:\\Setup_VcCode_Workspace\\S04_Shared_Connections\\S04_03_Shared_Program_Connections\\TOOLS\\AskFable\\Invoke-FableConsult.ps1';
+  const r = spawnSync('pwsh', ['-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File', ps1, '-NoMap', '-PromptFile', full, '-MaxOutputChars', String(maxOutputChars), '-PrintFull'], { encoding: 'utf8', timeout: 600000 });
+  const id = safeId('fable_run');
+  const out = { id, promptPath: full, exitCode: r.status, stdout: r.stdout || '', stderr: r.stderr || '', error: r.error ? String(r.error.message || r.error) : '' };
+  const resultPath = writeResult(id, 'fable_run', out);
+  return { jobId: id, status: r.status === 0 ? 'completed' : 'failed', resultPath, stdoutPreview: out.stdout.slice(0, 2000), stderrPreview: out.stderr.slice(0, 2000) };
+}
+
 function listTools() { return [
  { name:'search', title:'Search companion resources', description:'Search registered resources and job result pointers.', inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'fetch', title:'Fetch companion item', description:'Fetch registered text/image/job resource by id.', inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
@@ -55,7 +144,11 @@ function listTools() { return [
  { name:'list_mcp_services', title:'List MCP services', description:'List the 21 planned MCP service folders.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'describe_mcp_service', title:'Describe MCP service', description:'Describe one planned MCP service folder.', inputSchema:{type:'object',properties:{serviceId:{type:'string'}},required:['serviceId']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'create_fable_prompt_file', title:'Create Fable prompt file', description:'Create a Fable prompt file in Fable_Jobs for later review.', inputSchema:{type:'object',properties:{title:{type:'string'},body:{type:'string'}},required:['title','body']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
- { name:'get_job_status', title:'Get job status', description:'Read connector job record.', inputSchema:{type:'object',properties:{jobId:{type:'string'}},required:['jobId']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+  { name:'ingest_chat_transcript', title:'Ingest chat transcript', description:'Store a large chat transcript as a local resource for Fable handoff.', inputSchema:{type:'object',properties:{title:{type:'string'},text:{type:'string'}},required:['text']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'ingest_attachment_base64', title:'Ingest attachment base64', description:'Store a provided attachment payload under connector uploads and register it.', inputSchema:{type:'object',properties:{filename:{type:'string'},mime:{type:'string'},base64:{type:'string'}},required:['base64']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'create_fable_bundle', title:'Create Fable bundle', description:'Create a large file-backed Fable prompt bundle from resource IDs and file paths.', inputSchema:{type:'object',properties:{title:{type:'string'},question:{type:'string'},resourceIds:{type:'array'},filePaths:{type:'array'},includeFullText:{type:'boolean'},includeImageData:{type:'boolean'},maxBytesPerFile:{type:'number'}},required:['title','question']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'run_fable_bundle', title:'Run Fable bundle', description:'Run AskFable on a prepared bundle prompt file and store the full result.', inputSchema:{type:'object',properties:{bundlePath:{type:'string'},maxOutputChars:{type:'number'}},required:['bundlePath']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+{ name:'get_job_status', title:'Get job status', description:'Read connector job record.', inputSchema:{type:'object',properties:{jobId:{type:'string'}},required:['jobId']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'list_registered_resources', title:'List registered resources', description:'List pointer/image resources created by this connector.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} }
 ]; }
 function searchResources(query) { const q=String(query||'').toLowerCase(); const items=[...resourceIndex().map(r=>({id:r.id,title:r.title||r.id,type:r.type,url:''})),...serviceCatalog().map(s=>({id:s.service_id,title:s.folder,type:'mcp_service',url:''}))].filter(r=>JSON.stringify(r).toLowerCase().includes(q)).slice(0,80); return { results: items }; }
@@ -80,6 +173,10 @@ async function callTool(name, args={}) {
  if (name==='list_mcp_services') return toolResult({ services: serviceCatalog() });
  if (name==='describe_mcp_service') { const svc=serviceCatalog().find(s=>s.service_id===args.serviceId||s.folder===args.serviceId); if(!svc) throw new Error('service_not_found'); return toolResult(svc); }
  if (name==='create_fable_prompt_file') { const dir=path.join(CFG.fableJobsRoot,'Jobs'); fs.mkdirSync(dir,{recursive:true}); const id=safeId('fable'); const safeTitle=String(args.title).replace(/[^A-Za-z0-9_\-.]+/g,'_').slice(0,80); const file=path.join(dir,`${id}_${safeTitle}.txt`); fs.writeFileSync(file,`ASK_FABLE5 - ${args.title}\n-NoMap\n\n${args.body}`,'utf8'); return toolResult({promptPath:file}); }
+ if (name==='ingest_chat_transcript') { const rec = ingestText(args.title || 'chat transcript', args.text || ''); return toolResult({ id: rec.id, title: rec.title, path: rec.path, size: rec.size }); }
+ if (name==='ingest_attachment_base64') { const rec = ingestAttachment(args.filename, args.mime, args.base64); return toolResult({ id: rec.id, title: rec.title, path: rec.path, type: rec.type, size: rec.size }); }
+ if (name==='create_fable_bundle') return toolResult(createFableBundle(args));
+ if (name==='run_fable_bundle') return toolResult(runFablePromptFile(args.bundlePath, args.maxOutputChars));
  if (name==='get_job_status') { const f=path.join(jobsDir,`${String(args.jobId)}.json`); if(!fs.existsSync(f)) throw new Error('job_not_found'); return toolResult(JSON.parse(fs.readFileSync(f,'utf8'))); }
  if (name==='list_registered_resources') return toolResult({resources:resourceIndex()});
  throw new Error('unknown_tool');
@@ -91,3 +188,7 @@ async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='in
 async function readBody(req){ const chunks=[]; for await (const c of req) chunks.push(c); return Buffer.concat(chunks).toString('utf8'); }
 const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'2.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
 server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v2 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
+
+
+
+

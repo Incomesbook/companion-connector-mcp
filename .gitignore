@@ -13,3 +13,9 @@ profiles/runtime/
 
 selftest.png
 uploads/
+
+results/
+jobs/
+resources/
+logs/
+uploads/
