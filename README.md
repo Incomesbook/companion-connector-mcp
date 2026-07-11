@@ -408,3 +408,24 @@ Test:
 ```powershell
 npm run test:v25
 ```
+
+
+## V26: Context + UIA + visible output
+
+V26 improves `FABLE5:` direct execution for ChatGPT chat-reading tasks.
+
+Main behavior:
+
+- ChatGPT conversation URLs are recognized.
+- ChatGPT Classic / browser windows are read with UI Automation and OCR where possible.
+- The current chat context can be passed into the tool, so `FABLE5: прочти прошлое сообщение` can work when ChatGPT routes the previous message as `context`.
+- Results are shown visibly in Notepad and an HTML page, not only saved in JSON.
+- Every run still writes a proof log under `results/fable_direct_exec`.
+
+Use:
+
+```powershell
+.\Fable5-Direct.ps1 "FABLE5: прочти чат https://chatgpt.com/c/... и дай вывод по-русски"
+```
+
+For the ChatGPT/MCP app, route `FABLE5:` messages to `fable5_execute` and include recent chat text in `context` when the request asks to read the current or previous message.
