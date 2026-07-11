@@ -198,3 +198,40 @@ npm run test:v8
 ```
 
 The source folder is only read. Manifest, chunks, hashes, and Fable guide are written under CompanionConnector `results/`.
+
+## V14 documents, archives, and web snapshots
+
+V14 adds document/archive/web research tools:
+
+- `document_toolchain_report`
+- `inspect_document_file`
+- `inspect_archive_file`
+- `extract_archive_to_results`
+- `create_web_snapshot`
+- `universal_resource_inspect`
+
+Supported document families include text/HTML/CSV/JSON/code files, DOCX, PPTX, XLSX/XLSM, and PDF when a Python PDF engine is available.
+
+Archives are inspected read-only and extracted only into connector `results/` with path-traversal protection.
+
+Test:
+
+```powershell
+npm run test:v14
+```
+
+## V15 project research map
+
+V15 adds project-level intake and relationship mapping:
+
+- `create_folder_research_map`
+- `inspect_linked_resources_from_file`
+- `create_project_intake_bundle`
+
+These tools create Markdown/JSON outputs with file classification, extension counts, URL links, local references, import/include/source-like lines, and research intake summaries.
+
+Test:
+
+```powershell
+npm run test:v15
+```

@@ -618,6 +618,35 @@ function runMediaBridge(command, args = {}, timeoutMs = 900000) {
 function parseLocalLinksFromFile(args = {}) { return runMediaBridge('links_from_file', { path: assertReadable(args.filePath) }, 120000); }
 function mediaToolchainReport() { return runMediaBridge('toolchain', {}, 120000); }
 
+
+function runDocumentBridge(command, args = {}, timeoutMs = 900000) {
+  const script = path.join(ROOT, 'scripts', 'document_bridge_v14.py');
+  const py = process.env.PYTHON || 'python';
+  const argv = ['-X','utf8',script,command];
+  for (const [k,v] of Object.entries(args||{})) if (v !== undefined && v !== null) argv.push('--' + k.replace(/[A-Z]/g, m => '-' + m.toLowerCase()), String(v));
+  const r = spawnSync(py, argv, { encoding:'utf8', timeout: timeoutMs, maxBuffer: 128*1024*1024, cwd: ROOT });
+  if (r.error) throw r.error;
+  if (r.status !== 0 && !r.stdout) throw new Error((r.stderr || 'document_bridge_failed').slice(0,4000));
+  try { return JSON.parse(r.stdout); } catch { return { ok:false, stdout:r.stdout, stderr:r.stderr, status:r.status }; }
+}
+function documentToolchainReport() { return runDocumentBridge('toolchain', {}, 120000); }
+
+
+function runResearchBridge(command, args = {}, timeoutMs = 900000) {
+  const script = path.join(ROOT, 'scripts', 'research_bridge.py');
+  const py = process.env.PYTHON || 'python';
+  const argv = ['-X','utf8',script,command];
+  for (const [k,v] of Object.entries(args||{})) {
+    if (v === undefined || v === null || v === false) continue;
+    const key='--' + k.replace(/[A-Z]/g, m => '-' + m.toLowerCase());
+    if (v === true) argv.push(key); else argv.push(key, String(v));
+  }
+  const r = spawnSync(py, argv, { encoding:'utf8', timeout: timeoutMs, maxBuffer: 128*1024*1024, cwd: ROOT });
+  if (r.error) throw r.error;
+  if (r.status !== 0 && !r.stdout) throw new Error((r.stderr || 'research_bridge_failed').slice(0,4000));
+  try { return JSON.parse(r.stdout); } catch { return { ok:false, stdout:r.stdout, stderr:r.stderr, status:r.status }; }
+}
+
 function listTools() { return [
  { name:'search', title:'Search companion resources', description:'Search registered resources and job result pointers.', inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'fetch', title:'Fetch companion item', description:'Fetch registered text/image/job resource by id.', inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
@@ -690,6 +719,17 @@ function listTools() { return [
  { name:'ocr_image_file', title:'OCR image file', description:'Extract visible text from an image using local Tesseract OCR.', inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
  { name:'analyze_chart_image', title:'Analyze chart image', description:'OCR and simple line/edge analysis for chart/graph screenshots.', inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
  { name:'extract_links_from_file', title:'Extract links from file', description:'Extract http/https and markdown links from a local text file.', inputSchema:{type:'object',properties:{filePath:{type:'string'}},required:['filePath']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ 
+ { name:'document_toolchain_report', title:'Document toolchain report', description:'Check PDF/DOCX/PPTX/XLSX/archive/web extraction support.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'inspect_document_file', title:'Inspect document file', description:'Read PDF/DOCX/PPTX/XLSX/CSV/HTML/text into connector text/metadata bundle.', inputSchema:{type:'object',properties:{path:{type:'string'},maxChars:{type:'number'},maxRows:{type:'number'}},required:['path']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'inspect_archive_file', title:'Inspect archive file', description:'Create read-only manifest for ZIP/TAR archives without extracting to source.', inputSchema:{type:'object',properties:{path:{type:'string'},maxEntries:{type:'number'}},required:['path']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'extract_archive_to_results', title:'Extract archive to results', description:'Safely extract ZIP/TAR into connector results with path traversal protection.', inputSchema:{type:'object',properties:{path:{type:'string'},maxFiles:{type:'number'},maxBytes:{type:'number'}},required:['path']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'create_web_snapshot', title:'Create web snapshot', description:'Fetch a web page into connector HTML/text/metadata snapshot with links.', inputSchema:{type:'object',properties:{url:{type:'string'},maxChars:{type:'number'}},required:['url']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'universal_resource_inspect', title:'Universal resource inspect', description:'Dispatch one file/url/folder/media/archive/document to the best Companion inspector.', inputSchema:{type:'object',properties:{target:{type:'string'},maxChars:{type:'number'},maxRows:{type:'number'}} ,required:['target']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ 
+ { name:'create_folder_research_map', title:'Create folder research map', description:'Read-only folder scan that classifies files, links, references, imports, media, docs and archives.', inputSchema:{type:'object',properties:{folder:{type:'string'},maxFiles:{type:'number'},hashFiles:{type:'boolean'},noScanText:{type:'boolean'}},required:['folder']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'inspect_linked_resources_from_file', title:'Inspect linked resources from file', description:'Extract URL and path references from a file and report existence.', inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'create_project_intake_bundle', title:'Create project intake bundle', description:'Create compact project intake bundle from a folder.', inputSchema:{type:'object',properties:{folder:{type:'string'}},required:['folder']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
  { name:'get_job_status', title:'Get job status', description:'Read connector job record.', inputSchema:{type:'object',properties:{jobId:{type:'string'}},required:['jobId']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'list_registered_resources', title:'List registered resources', description:'List pointer/image resources created by this connector.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} }
 ]; }
@@ -771,6 +811,29 @@ async function callTool(name, args={}) {
  if (name==='ocr_image_file') return toolResult(runMediaBridge('ocr_image', { path: assertReadable(args.path) }, 300000));
  if (name==='analyze_chart_image') return toolResult(runMediaBridge('chart_image', { path: assertReadable(args.path) }, 300000));
  if (name==='extract_links_from_file') return toolResult(parseLocalLinksFromFile(args));
+ 
+ if (name==='document_toolchain_report') return toolResult(documentToolchainReport());
+ if (name==='inspect_document_file') return toolResult(runDocumentBridge('inspect-document', { path: assertReadable(args.path), maxChars: args.maxChars || 1000000, maxRows: args.maxRows || 500 }, 900000));
+ if (name==='inspect_archive_file') return toolResult(runDocumentBridge('archive-manifest', { path: assertReadable(args.path), maxEntries: args.maxEntries || 100000 }, 900000));
+ if (name==='extract_archive_to_results') return toolResult(runDocumentBridge('extract-archive', { path: assertReadable(args.path), maxFiles: args.maxFiles || 20000, maxBytes: args.maxBytes || 2000000000 }, 1800000));
+ if (name==='create_web_snapshot') return toolResult(runDocumentBridge('web-snapshot', { url: args.url, maxChars: args.maxChars || 500000 }, 300000));
+ 
+ if (name==='universal_resource_inspect') {
+   const target = String(args.target || '');
+   if (target.startsWith('http://') || target.startsWith('https://')) return toolResult(runDocumentBridge('web-snapshot', { url: target, maxChars: args.maxChars || 500000 }, 300000));
+   const full = assertReadable(target);
+   const st = fs.statSync(full);
+   if (st.isDirectory()) return toolResult(folderExplorer({ folderPath: full }));
+   const ext = path.extname(full).toLowerCase();
+   if (['.zip','.tar','.tgz','.gz'].includes(ext)) return toolResult(runDocumentBridge('archive-manifest', { path: full, maxEntries: 100000 }, 900000));
+   if (['.mp4','.mkv','.mov','.avi','.mp3','.wav','.m4a','.webm'].includes(ext)) return toolResult(mediaMetadata(full));
+   if (['.png','.jpg','.jpeg','.gif','.webp'].includes(ext)) return toolResult(runMediaBridge('ocr_image', { path: full }, 300000));
+   return toolResult(runDocumentBridge('inspect-document', { path: full, maxChars: args.maxChars || 1000000, maxRows: args.maxRows || 500 }, 900000));
+ }
+ 
+ if (name==='create_folder_research_map') return toolResult(runResearchBridge('research-map', { folder: assertReadable(args.folder), maxFiles: args.maxFiles || 200000, hashFiles: !!args.hashFiles, noScanText: !!args.noScanText }, 1800000));
+ if (name==='inspect_linked_resources_from_file') return toolResult(runResearchBridge('linked-resources', { path: assertReadable(args.path) }, 600000));
+ if (name==='create_project_intake_bundle') return toolResult(runResearchBridge('intake-bundle', { folder: assertReadable(args.folder) }, 1800000));
  if (name==='get_job_status') { const f=path.join(jobsDir,`${String(args.jobId)}.json`); if(!fs.existsSync(f)) throw new Error('job_not_found'); return toolResult(JSON.parse(fs.readFileSync(f,'utf8'))); }
  if (name==='list_registered_resources') return toolResult({resources:resourceIndex()});
  throw new Error('unknown_tool');
@@ -778,10 +841,10 @@ async function callTool(name, args={}) {
 
 function listResources() { return [ { uri:'companion://status', name:'Companion Connector status', mimeType:'application/json' }, { uri:'ui://companion/dashboard.html', name:'Companion dashboard', mimeType:'text/html;profile=mcp-app' }, { uri:'companion://mcp-services', name:'21 MCP service catalog', mimeType:'application/json' }, ...resourceIndex().map(r=>({uri:`companion://resource/${r.id}`, name:r.title||r.id, mimeType:(r.type||'').includes('image')?'application/json':'text/plain'})) ]; }
 function readResource(uri) { if(uri==='companion://status') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify({ok:true,root:ROOT,resources:resourceIndex().length,services:MCP_SERVICE_FOLDERS.length},null,2)}]}; if(uri==='ui://companion/dashboard.html') return {contents:[{uri,mimeType:'text/html;profile=mcp-app',text:fs.readFileSync(path.join(webDir,'dashboard.html'),'utf8')}]}; if(uri==='companion://mcp-services') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(serviceCatalog(),null,2)}]}; const m=String(uri).match(/^companion:\/\/resource\/(.+)$/); if(m) return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fetchResource(m[1]),null,2)}]}; throw new Error('resource_not_found'); }
-async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'13.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); return rpc(id,await callTool(name,args||{})); } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
+async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'15.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); return rpc(id,await callTool(name,args||{})); } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
 async function readBody(req){ const chunks=[]; for await (const c of req) chunks.push(c); return Buffer.concat(chunks).toString('utf8'); }
-const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'13.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
-server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v13 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
+const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'15.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
+server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v15 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
 
 
 
