@@ -329,3 +329,23 @@ MCP tools:
 - `fable_direct_dashboard`
 
 All direct messages are logged under `results\fable_direct` and mirrored into `results\fable_authority\decision_log.jsonl`.
+
+## V22 Fable5 Direct Mode
+
+New direct route:
+
+- `fable5`
+- `fable5_direct_mode_manifest`
+- `fable_capability_snapshot`
+- `fable_capability_review`
+- `fable5_request_chatgpt_help`
+
+Trigger words for a connected ChatGPT app:
+
+```text
+FABLE5:
+@Fable5
+F5:
+```
+
+The MCP connection cannot technically replace ChatGPT's base model by itself. The connected app must route these trigger messages to the `fable5` tool. The manifest is exposed at `companion://fable5-direct-mode` and via `fable5_direct_mode_manifest`.
