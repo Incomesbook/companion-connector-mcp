@@ -816,17 +816,106 @@ function applyLiveAgentAction(args={}){
 }
 function runLiveAgentCycle(args={}){
   const obs=createLiveAgentObservation(args);
-  const plan=createLiveAgentFablePlan({...args,observationPath:obs.jsonPath,sessionId:obs.sessionId});
+  const plan = args.planJson ? {ok:true, sessionId:obs.sessionId, observationPath:obs.jsonPath, plan:args.planJson, decidedBy:'Fable5', injectedPlan:true} : createLiveAgentFablePlan({...args,observationPath:obs.jsonPath,sessionId:obs.sessionId});
   const actions=Array.isArray(plan.plan.actions)?plan.plan.actions:[];
   const executed=[];
   const max=Number(args.maxActions||1);
-  for(const a of actions.slice(0,max)) executed.push(applyLiveAgentAction({action:a,execute:!!args.execute}));
-  let after=null; if(args.afterSnapshot) after=createLiveAgentObservation({sessionId:obs.sessionId,task:'after action',monitor:args.monitor,includeBrowser:args.includeBrowser,port:args.port});
-  const cycle={ok:true,sessionId:obs.sessionId,observation:obs,plan,executed,after,execute:!!args.execute};
+  for(const a of actions.slice(0,max)) executed.push(applyLiveAgentAction({action:a,execute:!!args.execute,decidedBy:'Fable5'}));
+  const after=createLiveAgentObservation({sessionId:obs.sessionId,task:'after action',monitor:args.monitor,includeBrowser:args.includeBrowser,port:args.port,decidedBy:'Fable5'});
+  const cycle={ok:true,sessionId:obs.sessionId,decidedBy:'Fable5',observation:obs,plan,executed,after,execute:!!args.execute};
   const file=assertWritable(path.join(liveAgentDir(obs.sessionId).dir,'cycle_'+Date.now()+'.json'));
   fs.writeFileSync(file,JSON.stringify(cycle,null,2),'utf8');
-  return {ok:true,sessionId:obs.sessionId,cyclePath:file,plan:plan.plan,executed,afterSnapshotPath:after?.screenPath||''};
+  authorityAppend('live_agent_cycle',{decidedBy:'Fable5', sessionId:obs.sessionId, execute:!!args.execute, observationPath:obs.jsonPath, planPath:plan.planPath||'', cyclePath:file, executedCount:executed.length, afterObservationPath:after.jsonPath||'', blocked:executed.filter(x=>x.ok===false).length});
+  return {ok:true,sessionId:obs.sessionId,cyclePath:file,plan:plan.plan,executed,afterSnapshotPath:after?.screenPath||'',afterObservationPath:after?.jsonPath||''};
 }
+
+
+const authorityDir = path.join(resultsDir, 'fable_authority');
+fs.mkdirSync(authorityDir, {recursive:true});
+const authorityJsonl = path.join(authorityDir, 'decision_log.jsonl');
+function authoritySafeId(prefix='authority') { return safeId(prefix); }
+function authorityAppend(kind, data={}) {
+  const rec = { id: authoritySafeId('auth'), kind, createdAt: new Date().toISOString(), ...data };
+  fs.appendFileSync(authorityJsonl, JSON.stringify(rec) + '\n', 'utf8');
+  try { fs.writeFileSync(path.join(authorityDir, `${rec.id}.json`), JSON.stringify(rec,null,2), 'utf8'); } catch {}
+  return rec;
+}
+function authorityRead(limit=100) {
+  if (!fs.existsSync(authorityJsonl)) return [];
+  const lines = fs.readFileSync(authorityJsonl,'utf8').split(/\r?\n/).filter(Boolean);
+  return lines.slice(-Number(limit||100)).map(x=>{ try{return JSON.parse(x)}catch{return {kind:'parse_error',raw:x}}; });
+}
+function htmlEscape(s){ return String(s||'').replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c])); }
+function authorityTextPreview(x, n=5000) { return compactText(typeof x==='string'?x:JSON.stringify(x,null,2), n); }
+function createFableAuthorityProposal(args={}) {
+  const title = String(args.title || args.topic || 'CompanionConnector authority proposal').slice(0,160);
+  const context = String(args.context || args.request || '');
+  const disagreement = String(args.disagreement || '');
+  const runFable = args.runFable !== false;
+  const promptId = authoritySafeId('fable_proposal');
+  const promptPath = path.join(authorityDir, `${promptId}.md`);
+  const prompt = [
+    'ASK_FABLE5 - CompanionConnector Fable Authority proposal',
+    '-NoMap','',
+    'You are Fable5. Give the implementation proposal and safety gates before ChatGPT modifies CompanionConnector.',
+    'Return concise JSON if possible: {"summary":"...","proposal":[...],"safety":[...],"approved":true|false,"risks":[...]}',
+    '',
+    `TITLE: ${title}`,
+    '',
+    'CONTEXT:',
+    context,
+    disagreement ? `\nDISAGREEMENT_OR_REASK:\n${disagreement}` : '',
+    '',
+    'Rules: keep protected paths read-only; write only inside CompanionConnector unless user explicitly authorizes; prefer logs and dry-run first.'
+  ].join('\n');
+  fs.writeFileSync(promptPath, prompt, 'utf8');
+  let status='prompt_created'; let fableRun=null; let fableText=''; let proposal={summary:'Fable run skipped', approved:null, proposal:[], safety:[]};
+  if (runFable) {
+    try {
+      fableRun = runFablePromptFile(promptPath, Number(args.maxOutputChars||120000));
+      try { fableText = JSON.parse(fs.readFileSync(fableRun.resultPath,'utf8')).stdout || ''; } catch { fableText = JSON.stringify(fableRun); }
+      proposal = parseJsonLoose(fableText) || {summary: authorityTextPreview(fableText,4000), approved:null, proposal:[], safety:[], raw:authorityTextPreview(fableText,12000)};
+      status='fable_returned';
+    } catch(e) {
+      status='fable_failed';
+      fableText=String(e.message||e);
+      proposal={summary:'Fable request failed or timed out', approved:false, error:fableText, proposal:[], safety:['Do not claim Fable approved when it did not return.']};
+    }
+  }
+  const rec=authorityAppend('fable_proposal',{decidedBy:'Fable5', status, title, promptPath, fableRun, proposal, raw:authorityTextPreview(fableText,50000)});
+  return {ok:true, authorityDir, record:rec, promptPath, status, proposal};
+}
+function recordFableAuthorityDisagreement(args={}) {
+  const rec=authorityAppend('disagreement',{decidedBy:'ChatGPT', previousId:args.previousId||'', reason:String(args.reason||''), myPosition:String(args.myPosition||''), fablePosition:String(args.fablePosition||''), requiresReask:!!args.reAsk});
+  let reask=null;
+  if (args.reAsk) reask=createFableAuthorityProposal({title:`Re-ask after disagreement ${rec.id}`, context:String(args.context||''), disagreement:String(args.reason||args.myPosition||''), runFable:args.runFable!==false});
+  return {ok:true, record:rec, reask};
+}
+function recordAuthorityToolAction(name, args={}, output=null, error=null) {
+  if (!authorityDir) return null;
+  const decidedBy=String(args?.decidedBy || (String(name).startsWith('fable_') || String(name).startsWith('live_agent') ? 'Fable5' : 'ChatGPT'));
+  const inputJson=JSON.stringify(args||{});
+  const outJson=JSON.stringify(output||{});
+  return authorityAppend('tool_action',{decidedBy, tool:String(name||''), ok:!error, error:error?String(error.message||error):'', inputSha256:crypto.createHash('sha256').update(inputJson).digest('hex'), outputSha256:crypto.createHash('sha256').update(outJson).digest('hex'), inputPreview:authorityTextPreview(args,3000), outputPreview:authorityTextPreview(output,5000)});
+}
+function fableAuthorityDashboard(args={}) {
+  const records=authorityRead(Number(args.limit||200));
+  const counts={}; const byDecider={};
+  for (const r of records){ counts[r.kind]=(counts[r.kind]||0)+1; if(r.decidedBy) byDecider[r.decidedBy]=(byDecider[r.decidedBy]||0)+1; }
+  const blocked=records.filter(r=>String(r.kind).includes('blocked') || r.ok===false || String(r.status||'').includes('failed')).slice(-50);
+  const proposals=records.filter(r=>r.kind==='fable_proposal').slice(-20);
+  const actions=records.filter(r=>r.kind==='tool_action').slice(-50);
+  const disagreements=records.filter(r=>r.kind==='disagreement').slice(-20);
+  const dash={ok:true, authorityDir, decisionLog:authorityJsonl, counts, byDecider, latest:{proposals, disagreements, actions, blocked}, generatedAt:new Date().toISOString()};
+  const jsonPath=path.join(authorityDir,'dashboard.json');
+  const htmlPath=path.join(authorityDir,'dashboard.html');
+  fs.writeFileSync(jsonPath,JSON.stringify(dash,null,2),'utf8');
+  const html = `<!doctype html><meta charset="utf-8"><title>Fable Authority Dashboard</title><style>body{font-family:Segoe UI,Arial;margin:20px;max-width:1200px}pre{white-space:pre-wrap;background:#f5f5f5;padding:12px;border-radius:8px}section{border:1px solid #ddd;border-radius:10px;padding:12px;margin:12px 0}</style><h1>Fable Authority Dashboard</h1><p>Generated ${dash.generatedAt}</p><section><h2>Counts</h2><pre>${htmlEscape(JSON.stringify({counts,byDecider},null,2))}</pre></section><section><h2>What Fable saw / decided</h2><pre>${htmlEscape(JSON.stringify(proposals.slice(-5),null,2))}</pre></section><section><h2>Executed / blocked</h2><pre>${htmlEscape(JSON.stringify(actions.slice(-10),null,2))}</pre></section><section><h2>Blocked / failed</h2><pre>${htmlEscape(JSON.stringify(blocked.slice(-10),null,2))}</pre></section>`;
+  fs.writeFileSync(htmlPath, html, 'utf8');
+  return {...dash,jsonPath,htmlPath};
+}
+function fableAutopilotDryRun(args={}) { return runLiveAgentCycle({...args, execute:false, afterSnapshot:true, decidedBy:'Fable5'}); }
+function fableAutopilotExecute(args={}) { return runLiveAgentCycle({...args, execute:true, afterSnapshot:true, decidedBy:'Fable5'}); }
 
 function listTools() { return [
  { name:'search', title:'Search companion resources', description:'Search registered resources and job result pointers.', inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
@@ -959,6 +1048,13 @@ function listTools() { return [
  { name:'live_agent_fable_plan', title:'Live agent Fable plan', description:'Ask Fable to produce a JSON action plan from a live observation.', inputSchema:{type:'object',properties:{sessionId:{type:'string'},task:{type:'string'},observationPath:{type:'string'},includeBrowser:{type:'boolean'},port:{type:'number'},maxObservationChars:{type:'number'},maxOutputChars:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
  { name:'live_agent_apply_action', title:'Live agent apply action', description:'Apply one safe allowlisted live-agent action; dry-run unless execute=true.', inputSchema:{type:'object',properties:{action:{type:'object'},actionJson:{type:'string'},type:{type:'string'},execute:{type:'boolean'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
  { name:'live_agent_cycle', title:'Live agent cycle', description:'Observe screen, ask Fable for plan, optionally execute safe action, and log the cycle.', inputSchema:{type:'object',properties:{sessionId:{type:'string'},task:{type:'string'},monitor:{type:'number'},includeBrowser:{type:'boolean'},port:{type:'number'},execute:{type:'boolean'},afterSnapshot:{type:'boolean'},maxActions:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+
+ { name:'fable_authority_proposal', title:'Fable authority proposal', description:'Ask Fable5 for a proposal before implementation and store it in the authority decision log.', inputSchema:{type:'object',properties:{title:{type:'string'},context:{type:'string'},request:{type:'string'},runFable:{type:'boolean'},maxOutputChars:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'fable_authority_disagreement', title:'Fable authority disagreement', description:'Record ChatGPT disagreement with Fable5 and optionally re-ask Fable5.', inputSchema:{type:'object',properties:{previousId:{type:'string'},reason:{type:'string'},myPosition:{type:'string'},fablePosition:{type:'string'},context:{type:'string'},reAsk:{type:'boolean'},runFable:{type:'boolean'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'fable_authority_decision_log', title:'Fable authority decision log', description:'Read recent Fable authority decision records.', inputSchema:{type:'object',properties:{limit:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'fable_authority_dashboard', title:'Fable authority dashboard', description:'Create JSON/HTML dashboard showing what Fable saw, decided, executed, and blocked.', inputSchema:{type:'object',properties:{limit:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'fable_autopilot_dry_run', title:'Fable autopilot dry run', description:'Run observe-plan-action loop in dry-run mode and store full proof chain.', inputSchema:{type:'object',properties:{sessionId:{type:'string'},task:{type:'string'},monitor:{type:'number'},includeBrowser:{type:'boolean'},port:{type:'number'},maxActions:{type:'number'},planJson:{type:'object'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'fable_autopilot_execute', title:'Fable autopilot execute', description:'Run observe-plan-action loop in execute mode using the allowlist and store full proof chain.', inputSchema:{type:'object',properties:{sessionId:{type:'string'},task:{type:'string'},monitor:{type:'number'},includeBrowser:{type:'boolean'},port:{type:'number'},maxActions:{type:'number'},planJson:{type:'object'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
  { name:'get_job_status', title:'Get job status', description:'Read connector job record.', inputSchema:{type:'object',properties:{jobId:{type:'string'}},required:['jobId']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'list_registered_resources', title:'List registered resources', description:'List pointer/image resources created by this connector.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} }
 ]; }
@@ -1111,6 +1207,13 @@ async function callTool(name, args={}) {
  if (name==='live_agent_fable_plan') return toolResult(createLiveAgentFablePlan(args));
  if (name==='live_agent_apply_action') return toolResult(applyLiveAgentAction(args));
  if (name==='live_agent_cycle') return toolResult(runLiveAgentCycle(args));
+
+ if (name==='fable_authority_proposal') return toolResult(createFableAuthorityProposal(args));
+ if (name==='fable_authority_disagreement') return toolResult(recordFableAuthorityDisagreement(args));
+ if (name==='fable_authority_decision_log') return toolResult({authorityDir, records:authorityRead(Number(args.limit||100))});
+ if (name==='fable_authority_dashboard') return toolResult(fableAuthorityDashboard(args));
+ if (name==='fable_autopilot_dry_run') return toolResult(fableAutopilotDryRun(args));
+ if (name==='fable_autopilot_execute') return toolResult(fableAutopilotExecute(args));
  if (name==='get_job_status') { const f=path.join(jobsDir,`${String(args.jobId)}.json`); if(!fs.existsSync(f)) throw new Error('job_not_found'); return toolResult(JSON.parse(fs.readFileSync(f,'utf8'))); }
  if (name==='list_registered_resources') return toolResult({resources:resourceIndex()});
  throw new Error('unknown_tool');
@@ -1118,10 +1221,10 @@ async function callTool(name, args={}) {
 
 function listResources() { return [ { uri:'companion://status', name:'Companion Connector status', mimeType:'application/json' }, { uri:'ui://companion/dashboard.html', name:'Companion dashboard', mimeType:'text/html;profile=mcp-app' }, { uri:'companion://mcp-services', name:'21 MCP service catalog', mimeType:'application/json' }, ...resourceIndex().map(r=>({uri:`companion://resource/${r.id}`, name:r.title||r.id, mimeType:(r.type||'').includes('image')?'application/json':'text/plain'})) ]; }
 function readResource(uri) { if(uri==='companion://status') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify({ok:true,root:ROOT,resources:resourceIndex().length,services:MCP_SERVICE_FOLDERS.length},null,2)}]}; if(uri==='ui://companion/dashboard.html') return {contents:[{uri,mimeType:'text/html;profile=mcp-app',text:fs.readFileSync(path.join(webDir,'dashboard.html'),'utf8')}]}; if(uri==='companion://mcp-services') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(serviceCatalog(),null,2)}]}; const m=String(uri).match(/^companion:\/\/resource\/(.+)$/); if(m) return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fetchResource(m[1]),null,2)}]}; throw new Error('resource_not_found'); }
-async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'19.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); return rpc(id,await callTool(name,args||{})); } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
+async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'20.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); try { const out=await callTool(name,args||{}); recordAuthorityToolAction(name,args||{},out,null); return rpc(id,out); } catch(toolErr) { recordAuthorityToolAction(name,args||{},null,toolErr); throw toolErr; } } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
 async function readBody(req){ const chunks=[]; for await (const c of req) chunks.push(c); return Buffer.concat(chunks).toString('utf8'); }
-const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'19.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
-server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v19 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
+const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'20.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
+server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v20 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
 
 
 

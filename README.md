@@ -281,3 +281,27 @@ V19 adds a real observe-plan-act loop:
 - `live_agent_cycle` performs observation, Fable planning, optional action, and an after-snapshot log.
 
 All live-agent cycles write evidence into `results/<sessionId>/`.
+
+## V20 Fable Authority Mode
+
+V20 adds an auditable authority layer so Fable5 decisions are recorded instead of only reported verbally.
+
+New tools:
+
+- `fable_authority_proposal`
+- `fable_authority_disagreement`
+- `fable_authority_decision_log`
+- `fable_authority_dashboard`
+- `fable_autopilot_dry_run`
+- `fable_autopilot_execute`
+
+Authority outputs:
+
+```text
+results\fable_authority\decision_log.jsonl
+results\fable_authority\dashboard.json
+results\fable_authority\dashboard.html
+```
+
+Live-agent proof chain now records observation, Fable plan, executed/dry-run action, next observation, and dashboard evidence.
+
