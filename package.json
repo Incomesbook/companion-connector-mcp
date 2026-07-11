@@ -1,6 +1,6 @@
 {
   "name": "companion-connector-mcp",
-  "version": "18.0.0",
+  "version": "19.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -26,7 +26,9 @@
     "test:v15": "node scripts/v15-research-map-test.js",
     "test:v16": "node scripts/v16-browser-archive-model-test.js",
     "test:v17": "node scripts/v17-human-semantic-test.js",
-    "test:v18": "node scripts/v18-queue-safety-test.js"
+    "test:v18": "node scripts/v18-queue-safety-test.js",
+    "test:v19": "node scripts/v19-live-agent-test.js",
+    "test:v19:fable": "node scripts/v19-fable-plan-smoke.js"
   },
   "keywords": [],
   "author": "",

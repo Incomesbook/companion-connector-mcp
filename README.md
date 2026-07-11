@@ -269,3 +269,15 @@ get_full_fable_micro_status
 
 V17 adds human-style desktop window listing, active-window inspection, focus, desktop screenshots, screen OCR, live watch screenshots, mouse/keyboard actions, and lightweight semantic indexing/search. V18 adds durable queue jobs, queue health, queue execution, cancel, and path safety audit. See docs/V17_V18_HUMAN_LIVE_SEMANTIC_QUEUE_STATUS.md.
 
+
+
+## V19 Live Agent Loop
+
+V19 adds a real observe-plan-act loop:
+
+- `live_agent_observe` captures screen, OCR, active window, windows list, and optional browser state.
+- `live_agent_fable_plan` asks Fable for a JSON action plan from the observation.
+- `live_agent_apply_action` applies one safe allowlisted action, dry-run unless `execute=true`.
+- `live_agent_cycle` performs observation, Fable planning, optional action, and an after-snapshot log.
+
+All live-agent cycles write evidence into `results/<sessionId>/`.
