@@ -668,6 +668,65 @@ function archiveSecure(cmd, args=[], timeout=900000){ return runPyJson('archive_
 function chartAdvanced(args=[]){ return runPyJson('chart_advanced.py', args, 600000); }
 function modelBridge(cmd, args=[], timeout=7200000){ return runPyJson('model_bridge.py', [cmd, ...args], timeout); }
 
+function runLiveBridge(cmd, args={}, timeout=600000){
+  const py=process.env.PYTHON || 'python';
+  const script=path.join(ROOT,'scripts','live_bridge.py');
+  const r=spawnSync(py,['-X','utf8',script,cmd,'--args',JSON.stringify(args||{})],{cwd:ROOT,encoding:'utf8',timeout,maxBuffer:1024*1024*128});
+  if(r.error) return {ok:false,error:String(r.error.message||r.error),stdout:r.stdout||'',stderr:r.stderr||''};
+  try{return JSON.parse((r.stdout||'').trim()||'{}')}catch{return {ok:false,error:'parse_failed',stdout:r.stdout,stderr:r.stderr,code:r.status}}
+}
+
+const queueDir = path.join(resultsDir, 'job_queue');
+fs.mkdirSync(queueDir, {recursive:true});
+function queuePath(id){ return path.join(queueDir, `${String(id)}.json`); }
+function createQueueJob(args={}){
+  const id=safeId('queue_job');
+  const rec={id, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString(), status:'queued', type:String(args.type||'noop'), priority:Number(args.priority||5), title:String(args.title||args.type||id), payload:args.payload||{}, result:null, error:null};
+  fs.writeFileSync(queuePath(id), JSON.stringify(rec,null,2),'utf8');
+  return rec;
+}
+function listQueueJobs(args={}){ const limit=Number(args.limit||50); const arr=fs.readdirSync(queueDir).filter(f=>f.endsWith('.json')).map(f=>JSON.parse(fs.readFileSync(path.join(queueDir,f),'utf8'))).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt))).slice(0,limit); return {queueDir,count:arr.length,jobs:arr}; }
+
+
+function saveQueueJob(rec){ rec.updatedAt=new Date().toISOString(); fs.writeFileSync(queuePath(rec.id), JSON.stringify(rec,null,2),'utf8'); return rec; }
+function cancelQueueJob(args={}){ const p=queuePath(args.id); if(!fs.existsSync(p)) throw new Error('queue_job_not_found'); const rec=JSON.parse(fs.readFileSync(p,'utf8')); if(rec.status==='running') throw new Error('cannot_cancel_running_job'); rec.status='cancelled'; return saveQueueJob(rec); }
+function auditPathSafety(args={}){
+  const raw=String(args.path||''); const resolved=raw ? fs.realpathSync(path.resolve(raw)) : '';
+  const protectedNames=['_AI_CHATS_ОБЩИЕ','_AI_CHATS_ОБЩИЕ'.normalize('NFC')];
+  const protectedHit=protectedNames.some(x=>resolved.includes(x));
+  const writableInsideConnector=resolved ? isInside(resolved, ROOT) : false;
+  return {path:raw,resolved,protectedHit,writeAllowedByConnector:writableInsideConnector,readAllowedByDrive: resolved ? discoverReadableRoots().some(r=>r.readable && isInside(resolved,r.root)) : false, recommendation: protectedHit ? 'read_only_only_unless_user_explicitly_authorizes' : 'normal_connector_rules'};
+}
+
+
+function runQueueOnce(args={}){
+  const jobs=fs.readdirSync(queueDir).filter(f=>f.endsWith('.json')).map(f=>JSON.parse(fs.readFileSync(path.join(queueDir,f),'utf8'))).filter(j=>j.status==='queued').sort((a,b)=>(a.priority-b.priority)||String(a.createdAt).localeCompare(String(b.createdAt)));
+  const max=Number(args.max||1); const ran=[];
+  for(const rec of jobs.slice(0,max)){
+    rec.status='running'; saveQueueJob(rec);
+    try{
+      const p=rec.payload||{}; let result={ok:true, noop:true};
+      if(rec.type==='screen_snapshot') result=runLiveBridge('screenshot',p,180000);
+      else if(rec.type==='screen_ocr') result=runLiveBridge('screen_ocr',p,180000);
+      else if(rec.type==='semantic_index') result=runSemanticBridge('create',{indexPath:assertReadable(p.indexPath)},1800000);
+      else if(rec.type==='document_inspect') result=runDocumentBridge('inspect',{path:assertReadable(p.path)},900000);
+      else if(rec.type==='research_map') result=runResearchBridge('map',{folder:assertReadable(p.folder),maxFiles:p.maxFiles||5000},1800000);
+      rec.status='done'; rec.result=result;
+    } catch(e){ rec.status='failed'; rec.error=String(e.message||e); }
+    saveQueueJob(rec); ran.push(rec);
+  }
+  return {queueDir, ran:ran.length, jobs:ran};
+}
+function queueHealthReport(){ const arr=fs.readdirSync(queueDir).filter(f=>f.endsWith('.json')).map(f=>JSON.parse(fs.readFileSync(path.join(queueDir,f),'utf8'))); const counts={}; for(const j of arr) counts[j.status]=(counts[j.status]||0)+1; return {queueDir,total:arr.length,counts}; }
+
+function runSemanticBridge(cmd,args={},timeout=900000){
+  const py=process.env.PYTHON || 'python';
+  const script=path.join(ROOT,'scripts','semantic_bridge.py');
+  const r=spawnSync(py,['-X','utf8',script,cmd,'--args',JSON.stringify(args||{})],{cwd:ROOT,encoding:'utf8',timeout,maxBuffer:1024*1024*256});
+  if(r.error) return {ok:false,error:String(r.error.message||r.error),stdout:r.stdout||'',stderr:r.stderr||''};
+  try{return JSON.parse((r.stdout||'').trim()||'{}')}catch{return {ok:false,error:'parse_failed',stdout:r.stdout,stderr:r.stderr,code:r.status}}
+}
+
 function listTools() { return [
  { name:'search', title:'Search companion resources', description:'Search registered resources and job result pointers.', inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'fetch', title:'Fetch companion item', description:'Fetch registered text/image/job resource by id.', inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
@@ -773,6 +832,27 @@ function listTools() { return [
  { name:'local_model_chat_test', title:'Local model chat test', description:'Test local Ollama model on CPU provider.', inputSchema:{type:'object',properties:{model:{type:'string'},prompt:{type:'string'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'start_full_fable_micro_read', title:'Start full Fable micro-read', description:'Start durable background full Fable micro-read until completeAll=true is possible.', inputSchema:{type:'object',properties:{index:{type:'string'},out:{type:'string'},maxChars:{type:'number'},timeout:{type:'number'},model:{type:'string'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
  { name:'get_full_fable_micro_status', title:'Get full Fable micro-read status', description:'Read progress for durable full Fable micro-read.', inputSchema:{type:'object',properties:{out:{type:'string'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ 
+ { name:'human_list_windows', title:'Human list windows', description:'List visible desktop windows for human-style navigation.', inputSchema:{type:'object',properties:{query:{type:'string'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'human_active_window', title:'Human active window', description:'Return active desktop window title and bounds.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'human_focus_window', title:'Human focus window', description:'Focus a desktop window by title substring.', inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'human_screen_snapshot', title:'Human screen snapshot', description:'Capture the current desktop screen into connector results.', inputSchema:{type:'object',properties:{monitor:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'human_screen_ocr', title:'Human screen OCR', description:'OCR the current desktop screen.', inputSchema:{type:'object',properties:{monitor:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'human_live_watch', title:'Human live watch', description:'Capture repeated desktop screenshots and change scores.', inputSchema:{type:'object',properties:{seconds:{type:'number'},interval:{type:'number'},monitor:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'human_mouse_move', title:'Human mouse move', description:'Move the mouse pointer to coordinates.', inputSchema:{type:'object',properties:{x:{type:'number'},y:{type:'number'},duration:{type:'number'}},required:['x','y']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'human_click_xy', title:'Human click XY', description:'Click desktop coordinates.', inputSchema:{type:'object',properties:{x:{type:'number'},y:{type:'number'},clicks:{type:'number'}},required:['x','y']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'human_type_text', title:'Human type text', description:'Type or paste text into focused application.', inputSchema:{type:'object',properties:{text:{type:'string'},paste:{type:'boolean'},interval:{type:'number'}},required:['text']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'human_press_key', title:'Human press key', description:'Press one key or hotkey sequence.', inputSchema:{type:'object',properties:{key:{type:'string'},keys:{type:'array'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'human_scroll', title:'Human scroll', description:'Scroll focused window.', inputSchema:{type:'object',properties:{clicks:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'create_semantic_index', title:'Create semantic index', description:'Create a lightweight local semantic/token index from a folder content_index.json.', inputSchema:{type:'object',properties:{indexPath:{type:'string'}},required:['indexPath']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'search_semantic_index', title:'Search semantic index', description:'Search a lightweight local semantic/token index.', inputSchema:{type:'object',properties:{indexPath:{type:'string'},query:{type:'string'},limit:{type:'number'}},required:['indexPath','query']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ 
+ { name:'create_queue_job', title:'Create queue job', description:'Create a durable connector job queue item.', inputSchema:{type:'object',properties:{type:{type:'string'},title:{type:'string'},priority:{type:'number'},payload:{type:'object'}},required:['type']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'list_queue_jobs', title:'List queue jobs', description:'List durable connector queue jobs.', inputSchema:{type:'object',properties:{limit:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'run_queue_once', title:'Run queue once', description:'Run queued jobs once with checkpointed status.', inputSchema:{type:'object',properties:{max:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'cancel_queue_job', title:'Cancel queue job', description:'Cancel a queued connector job.', inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'queue_health_report', title:'Queue health report', description:'Summarize durable queue status counts.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'audit_path_safety', title:'Audit path safety', description:'Check path read/write/protected-path safety before operations.', inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'get_job_status', title:'Get job status', description:'Read connector job record.', inputSchema:{type:'object',properties:{jobId:{type:'string'}},required:['jobId']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'list_registered_resources', title:'List registered resources', description:'List pointer/image resources created by this connector.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} }
 ]; }
@@ -899,6 +979,27 @@ async function callTool(name, args={}) {
  if (name==='local_model_chat_test') return toolResult(modelBridge('chat', ['--model', String(args.model||'qwen2.5:3b'), '--prompt', String(args.prompt||'Return OK.')], 900000));
  if (name==='start_full_fable_micro_read') return toolResult(runPwshJson('start_v16_full_micro_read.ps1', [...(args.index?['-Index',String(args.index)]:[]), ...(args.out?['-Out',String(args.out)]:[]), '-MaxChars', String(args.maxChars||25000), '-Timeout', String(args.timeout||600), '-Model', String(args.model||'qwen2.5:3b')], 120000));
  if (name==='get_full_fable_micro_status') return toolResult(runPwshJson('status_v16_full_micro_read.ps1', [...(args.out?['-Out',String(args.out)]:[])], 120000));
+ 
+ if (name==='human_list_windows') return toolResult(runLiveBridge('list_windows', args, 120000));
+ if (name==='human_active_window') return toolResult(runLiveBridge('active_window', args, 120000));
+ if (name==='human_focus_window') return toolResult(runLiveBridge('focus_window', args, 120000));
+ if (name==='human_screen_snapshot') return toolResult(runLiveBridge('screenshot', args, 180000));
+ if (name==='human_screen_ocr') return toolResult(runLiveBridge('screen_ocr', args, 180000));
+ if (name==='human_live_watch') return toolResult(runLiveBridge('monitor', args, 900000));
+ if (name==='human_mouse_move') return toolResult(runLiveBridge('move', args, 120000));
+ if (name==='human_click_xy') return toolResult(runLiveBridge('click', args, 120000));
+ if (name==='human_type_text') return toolResult(runLiveBridge('type_text', args, 120000));
+ if (name==='human_press_key') return toolResult(runLiveBridge('press_key', args, 120000));
+ if (name==='human_scroll') return toolResult(runLiveBridge('scroll', args, 120000));
+ if (name==='create_semantic_index') return toolResult(runSemanticBridge('create', { indexPath: assertReadable(args.indexPath) }, 1800000));
+ if (name==='search_semantic_index') return toolResult(runSemanticBridge('search', { indexPath: assertReadable(args.indexPath), query: args.query, limit: args.limit || 20 }, 300000));
+ 
+ if (name==='create_queue_job') return toolResult(createQueueJob(args));
+ if (name==='list_queue_jobs') return toolResult(listQueueJobs(args));
+ if (name==='run_queue_once') return toolResult(runQueueOnce(args));
+ if (name==='cancel_queue_job') return toolResult(cancelQueueJob(args));
+ if (name==='queue_health_report') return toolResult(queueHealthReport());
+ if (name==='audit_path_safety') return toolResult(auditPathSafety(args));
  if (name==='get_job_status') { const f=path.join(jobsDir,`${String(args.jobId)}.json`); if(!fs.existsSync(f)) throw new Error('job_not_found'); return toolResult(JSON.parse(fs.readFileSync(f,'utf8'))); }
  if (name==='list_registered_resources') return toolResult({resources:resourceIndex()});
  throw new Error('unknown_tool');
@@ -906,10 +1007,10 @@ async function callTool(name, args={}) {
 
 function listResources() { return [ { uri:'companion://status', name:'Companion Connector status', mimeType:'application/json' }, { uri:'ui://companion/dashboard.html', name:'Companion dashboard', mimeType:'text/html;profile=mcp-app' }, { uri:'companion://mcp-services', name:'21 MCP service catalog', mimeType:'application/json' }, ...resourceIndex().map(r=>({uri:`companion://resource/${r.id}`, name:r.title||r.id, mimeType:(r.type||'').includes('image')?'application/json':'text/plain'})) ]; }
 function readResource(uri) { if(uri==='companion://status') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify({ok:true,root:ROOT,resources:resourceIndex().length,services:MCP_SERVICE_FOLDERS.length},null,2)}]}; if(uri==='ui://companion/dashboard.html') return {contents:[{uri,mimeType:'text/html;profile=mcp-app',text:fs.readFileSync(path.join(webDir,'dashboard.html'),'utf8')}]}; if(uri==='companion://mcp-services') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(serviceCatalog(),null,2)}]}; const m=String(uri).match(/^companion:\/\/resource\/(.+)$/); if(m) return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fetchResource(m[1]),null,2)}]}; throw new Error('resource_not_found'); }
-async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'16.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); return rpc(id,await callTool(name,args||{})); } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
+async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'18.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); return rpc(id,await callTool(name,args||{})); } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
 async function readBody(req){ const chunks=[]; for await (const c of req) chunks.push(c); return Buffer.concat(chunks).toString('utf8'); }
-const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'16.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
-server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v16 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
+const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'18.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
+server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v18 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
 
 
 
