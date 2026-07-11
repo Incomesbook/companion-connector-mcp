@@ -993,7 +993,7 @@ function fableDirectDashboard(args={}){
 function fable5ModeManifest(args={}){
   const manifest = {
     ok:true,
-    version:'24.0.0',
+    version:'25.0.0',
     mode:'Fable5 Direct Mode',
     triggerWords:['FABLE5:', '@Fable5', 'F5:'],
     primaryTool:'fable5',
@@ -1011,7 +1011,7 @@ function fableCapabilitiesSnapshot(args={}){
   const tools=listTools().map(t=>({name:t.name,title:t.title,description:t.description,readOnly:!!t.annotations?.readOnlyHint}));
   const docsDir=path.join(ROOT,'docs');
   const docs=fs.existsSync(docsDir)?fs.readdirSync(docsDir).filter(f=>f.toLowerCase().endsWith('.md')||f.toLowerCase().endsWith('.json')).sort():[];
-  const snap={ok:true,version:'24.0.0',toolCount:tools.length,tools,docs,directMode:fable5ModeManifest({}), generatedAt:new Date().toISOString()};
+  const snap={ok:true,version:'25.0.0',toolCount:tools.length,tools,docs,directMode:fable5ModeManifest({}), generatedAt:new Date().toISOString()};
   const p=assertWritable(path.join(authorityDir,'V22_FULL_CAPABILITIES_FOR_FABLE.json'));
   fs.writeFileSync(p, JSON.stringify(snap,null,2),'utf8');
   return {...snap,path:p};
@@ -1086,9 +1086,109 @@ function directCurrentChatObserve(task=''){
   try { windowOcr = runLiveBridge('window_ocr',{query:'ChatGPT'},180000); } catch(e) { windowOcr={ok:false,error:String(e.message||e)}; }
   return {ok:true, windows, focus, observation:obs, windowShot, windowOcr, note:'Window OCR reads the visible ChatGPT window only; full hidden chat history requires exported/passed transcript or browser DOM access.'};
 }
+
+function directExtractChatUrl(task){
+  const m=String(task||'').match(/https:\/\/chatgpt\.com\/c\/[A-Za-z0-9-]+/i);
+  return m ? m[0] : '';
+}
+function directLikelyChatTitle(task){
+  const s=String(task||'');
+  const m=s.match(/(?:чат\s+называется|chat\s+(?:is\s+)?called|title\s*:?)\s*["“”']?([^\n"“”']{3,80})/i);
+  if(m) return m[1].trim().replace(/[.!?]+$/,'');
+  if(/codex\s+chat\s+watch/i.test(s)) return 'Codex Chat Watch';
+  if(/chatgpt\s+classic/i.test(s)) return 'ChatGPT Classic';
+  return 'ChatGPT';
+}
+function directOpenUrlDefault(url){
+  if(!/^https:\/\/chatgpt\.com\/c\/[A-Za-z0-9-]+/i.test(String(url||''))) return {ok:false,error:'url_not_allowed',url};
+  const ps=`Start-Process -FilePath ${JSON.stringify(url)}`;
+  const r=spawnSync('pwsh',['-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-Command',ps],{cwd:ROOT,encoding:'utf8',timeout:30000,maxBuffer:1024*1024});
+  return {ok:r.status===0,code:r.status,stdout:(r.stdout||'').slice(-2000),stderr:(r.stderr||'').slice(-2000),url};
+}
+function directWindowReadPages(query, pages=5){
+  const captures=[];
+  let focus=null;
+  try { focus=runLiveBridge('focus_window',{query},120000); } catch(e){ focus={ok:false,error:String(e.message||e)}; }
+  for(let i=0;i<Number(pages||5);i++){
+    let ocr=null, shot=null;
+    try { ocr=runLiveBridge('window_ocr',{query},180000); } catch(e){ ocr={ok:false,error:String(e.message||e)}; }
+    try { shot=runLiveBridge('window_screenshot',{query},180000); } catch(e){ shot={ok:false,error:String(e.message||e)}; }
+    captures.push({page:i,ocr,shot});
+    try { runLiveBridge('scroll',{clicks:-7},120000); } catch {}
+  }
+  return {ok:true,query,focus,captures};
+}
+function directSummarizeOcrRussian(task, readResult){
+  const texts=[];
+  for(const c of (readResult.captures||[])){
+    const t=c?.ocr?.text||'';
+    if(t && !texts.includes(t)) texts.push(t);
+  }
+  const combined=compactDirectText(texts.join('\n\n--- PAGE ---\n\n'), 30000);
+  const prompt=[
+    'Ты Fable5. Пользователь просит прочитать чат и вывести русское сообщение по пунктам.',
+    'Сделай только честный вывод из OCR/наблюдения. Если полного текста нет, скажи что видно и что не удалось прочесть.',
+    'Не выдумывай скрытые части чата.',
+    '', 'ЗАДАНИЕ:', String(task||''), '', 'OCR/НАБЛЮДЕНИЕ:', combined
+  ].join('\n');
+  let modelOut=null, summary='';
+  try{
+    modelOut=modelBridge('chat',['--model','qwen2.5:3b','--prompt',prompt],900000);
+    summary=modelOut?.response?.message?.content || modelOut?.response?.response || '';
+  }catch(e){ modelOut={ok:false,error:String(e.message||e)}; }
+  if(!summary || summary.length<30){
+    summary = [
+      'Fable5: результат чтения чата',
+      '',
+      '1. Я смог прочитать только видимую часть окна через OCR.',
+      '2. Полная скрытая история чата не была доступна через текущий UI-снимок.',
+      '3. Видимый текст/фрагменты:',
+      compactDirectText(combined || '(OCR не вернул текста)', 5000),
+      '',
+      '4. Чтобы прочитать весь чат полностью, нужно открыть нужный чат в активном браузере/приложении и дать сервису доступ к DOM или сделать автоматический scroll+OCR по всей истории.'
+    ].join('\n');
+  }
+  return {ok:true,summary,modelOut,combinedChars:combined.length,combinedPreview:compactDirectText(combined,3000)};
+}
+function directReadChatSummaryDisplay(task){
+  const url=directExtractChatUrl(task);
+  const title=directLikelyChatTitle(task);
+  const opened=url ? directOpenUrlDefault(url) : {ok:false,skipped:true};
+  const preferredQueries=[];
+  if(title) preferredQueries.push(title);
+  preferredQueries.push('Codex Chat Watch','ChatGPT Classic','ChatGPT');
+  let read=null, usedQuery='';
+  for(const q of preferredQueries){
+    try{
+      const wins=runLiveBridge('list_windows',{query:q},120000);
+      if(wins?.count>0){ usedQuery=q; read=directWindowReadPages(q,6); break; }
+    }catch {}
+  }
+  if(!read){ usedQuery='ChatGPT'; read=directWindowReadPages('ChatGPT',3); }
+  const summary=directSummarizeOcrRussian(task, read);
+  const message=[
+    'Fable5 прочитал доступную часть чата/окна и сделал вывод:',
+    '',
+    summary.summary,
+    '',
+    'Технически:',
+    `- URL: ${url||'(не найден)'}`,
+    `- окно/поиск: ${usedQuery}`,
+    `- OCR символов: ${summary.combinedChars}`,
+    '- полный proof log сохранён в results/fable_direct_exec'
+  ].join('\n');
+  const shown=directShowMessage(message, 'Fable5: вывод по чату');
+  return {ok:true,type:'read_chat_summary_display',url,title,opened,usedQuery,read,summary,shown};
+}
+
 function directBuildActions(task, fableText=''){
-  const s = (String(task||'') + '\n' + String(fableText||'')).toLowerCase();
+  const original = String(task||'');
+  const s = (original + '\n' + String(fableText||'')).toLowerCase();
   const actions=[];
+  if(directExtractChatUrl(original) || /codex\s+chat\s+watch/i.test(original) || /(прочти|прочитай|read).{0,80}(чат|chatgpt|chat)/i.test(original)){
+    actions.push({type:'read_chat_summary_display', reason:'read ChatGPT chat/window, summarize in Russian, and show result'});
+    return actions;
+  }
   if(/(chrome|хром|browser|браузер)/i.test(s) && /(open|start|launch|запусти|открой|новый)/i.test(s)){
     actions.push({type:'browser_start', reason:'request mentions opening browser/chrome', port:9222, url:'about:blank'});
   }
@@ -1109,6 +1209,7 @@ function directExecuteAction(action, task){
     if(type==='browser_new_tab') return {ok:true,type,result:browserBridge('new_tab',['--port',String(action.port||9222),'--url',String(action.url||'about:blank')],300000)};
     if(type==='browser_navigate') return {ok:true,type,result:browserBridge('navigate',['--port',String(action.port||9222),'--url',String(action.url||'about:blank'),'--index',String(action.index||0),'--wait',String(action.wait||1.5)],300000)};
     if(type==='observe_current_chat') return {ok:true,type,result:directCurrentChatObserve(task)};
+    if(type==='read_chat_summary_display') return {ok:true,type,result:directReadChatSummaryDisplay(task)};
     if(type==='display_message') return {ok:true,type,result:directShowMessage(action.message||'Fable5 completed.', action.title||'Fable5')};
     if(type==='human_focus_window') return {ok:true,type,result:runLiveBridge('focus_window',{query:action.query||''},120000)};
     if(type==='powershell_safe') return {ok:true,type,result:directPowerShellSafe(action.command||'')};
@@ -1470,11 +1571,11 @@ async function callTool(name, args={}) {
 }
 
 function listResources() { return [ { uri:'companion://status', name:'Companion Connector status', mimeType:'application/json' }, { uri:'ui://companion/dashboard.html', name:'Companion dashboard', mimeType:'text/html;profile=mcp-app' }, { uri:'companion://mcp-services', name:'21 MCP service catalog', mimeType:'application/json' }, { uri:'companion://fable5-direct-mode', name:'Fable5 Direct Mode instructions', mimeType:'application/json' }, { uri:'companion://fable5-capabilities', name:'Fable5 full capability snapshot', mimeType:'application/json' }, ...resourceIndex().map(r=>({uri:`companion://resource/${r.id}`, name:r.title||r.id, mimeType:(r.type||'').includes('image')?'application/json':'text/plain'})) ]; }
-function readResource(uri) { if(uri==='companion://status') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify({ok:true,root:ROOT,resources:resourceIndex().length,services:MCP_SERVICE_FOLDERS.length,version:'24.0.0'},null,2)}]}; if(uri==='ui://companion/dashboard.html') return {contents:[{uri,mimeType:'text/html;profile=mcp-app',text:fs.readFileSync(path.join(webDir,'dashboard.html'),'utf8')}]}; if(uri==='companion://mcp-services') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(serviceCatalog(),null,2)}]}; if(uri==='companion://fable5-direct-mode') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fable5ModeManifest({}),null,2)}]}; if(uri==='companion://fable5-capabilities') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fableCapabilitiesSnapshot({}),null,2)}]}; const m=String(uri).match(/^companion:\/\/resource\/(.+)$/); if(m) return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fetchResource(m[1]),null,2)}]}; throw new Error('resource_not_found'); }
-async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'24.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); try { const out=await callTool(name,args||{}); recordAuthorityToolAction(name,args||{},out,null); return rpc(id,out); } catch(toolErr) { recordAuthorityToolAction(name,args||{},null,toolErr); throw toolErr; } } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'},{name:'fable5_direct_mode',title:'Route this chat to Fable5 first'},{name:'fable5_trigger_words',title:'Use FABLE5 / @Fable5 / F5 trigger words'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools. In Fable5 Direct Mode, route FABLE5, @Fable5, and F5 messages to the fable5 tool and return Fable5 answer with the authority log path. Act as transport unless Fable5 requests help.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
+function readResource(uri) { if(uri==='companion://status') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify({ok:true,root:ROOT,resources:resourceIndex().length,services:MCP_SERVICE_FOLDERS.length,version:'25.0.0'},null,2)}]}; if(uri==='ui://companion/dashboard.html') return {contents:[{uri,mimeType:'text/html;profile=mcp-app',text:fs.readFileSync(path.join(webDir,'dashboard.html'),'utf8')}]}; if(uri==='companion://mcp-services') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(serviceCatalog(),null,2)}]}; if(uri==='companion://fable5-direct-mode') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fable5ModeManifest({}),null,2)}]}; if(uri==='companion://fable5-capabilities') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fableCapabilitiesSnapshot({}),null,2)}]}; const m=String(uri).match(/^companion:\/\/resource\/(.+)$/); if(m) return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fetchResource(m[1]),null,2)}]}; throw new Error('resource_not_found'); }
+async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'25.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); try { const out=await callTool(name,args||{}); recordAuthorityToolAction(name,args||{},out,null); return rpc(id,out); } catch(toolErr) { recordAuthorityToolAction(name,args||{},null,toolErr); throw toolErr; } } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'},{name:'fable5_direct_mode',title:'Route this chat to Fable5 first'},{name:'fable5_trigger_words',title:'Use FABLE5 / @Fable5 / F5 trigger words'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools. In Fable5 Direct Mode, route FABLE5, @Fable5, and F5 messages to the fable5 tool and return Fable5 answer with the authority log path. Act as transport unless Fable5 requests help.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
 async function readBody(req){ const chunks=[]; for await (const c of req) chunks.push(c); return Buffer.concat(chunks).toString('utf8'); }
-const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'24.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
-server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v24 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
+const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'25.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
+server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v25 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
 
 
 

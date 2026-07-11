@@ -391,3 +391,20 @@ npm run test:v24
 ```
 
 Important: the executor can read visible screen/OCR and controlled browser DOM where available. Full hidden ChatGPT history requires transcript export/pass-through or browser DOM access.
+
+
+## V25 ChatGPT chat reader executor
+
+V25 adds a direct execution path for tasks like:
+
+```text
+FABLE5: прочти чат https://chatgpt.com/c/... и выведи русское сообщение по пунктам
+```
+
+The `fable5_execute` tool now detects ChatGPT chat URLs, opens the URL through the default user browser, searches for likely windows such as `Codex Chat Watch` or `ChatGPT Classic`, captures repeated OCR, summarizes the visible result in Russian, displays the result on screen, and writes a proof log to `results/fable_direct_exec`.
+
+Test:
+
+```powershell
+npm run test:v25
+```
