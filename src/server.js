@@ -891,6 +891,16 @@ function recordFableAuthorityDisagreement(args={}) {
   if (args.reAsk) reask=createFableAuthorityProposal({title:`Re-ask after disagreement ${rec.id}`, context:String(args.context||''), disagreement:String(args.reason||args.myPosition||''), runFable:args.runFable!==false});
   return {ok:true, record:rec, reask};
 }
+
+const fableDirectDir = path.join(resultsDir, 'fable_direct');
+fs.mkdirSync(fableDirectDir, {recursive:true});
+function directTaskPath(id){ return path.join(fableDirectDir, `${String(id)}.json`); }
+function directSafeId(prefix='direct') { return safeId(prefix); }
+function compactDirectText(v, n=50000){
+  const x = typeof v === 'string' ? v : JSON.stringify(v ?? '', null, 2);
+  return x.length > n ? x.slice(0,n) + '\n...[truncated]...' : x;
+}
+
 function recordAuthorityToolAction(name, args={}, output=null, error=null) {
   if (!authorityDir) return null;
   const decidedBy=String(args?.decidedBy || (String(name).startsWith('fable_') || String(name).startsWith('live_agent') ? 'Fable5' : 'ChatGPT'));
@@ -917,7 +927,66 @@ function fableAuthorityDashboard(args={}) {
 function fableAutopilotDryRun(args={}) { return runLiveAgentCycle({...args, execute:false, afterSnapshot:true, decidedBy:'Fable5'}); }
 function fableAutopilotExecute(args={}) { return runLiveAgentCycle({...args, execute:true, afterSnapshot:true, decidedBy:'Fable5'}); }
 
+
+function fableDirectSubmit(args={}){
+  const id = directSafeId('fable_direct');
+  const createdAt = new Date().toISOString();
+  const task = String(args.task || '').trim();
+  if(!task) throw new Error('task_required');
+  const context = compactDirectText(args.context || '', 80000);
+  const promptPath = assertWritable(path.join(fableDirectDir, `${id}_prompt.md`));
+  const prompt = [
+    'ASK_FABLE5 - Direct user message',
+    '-NoMap','',
+    'You are Fable5. This message came through CompanionConnector direct inbox.',
+    'Return a useful answer and include any safe next-step plan.',
+    '', 'USER_MESSAGE:', task, '', 'CONTEXT:', context
+  ].join('\n');
+  fs.writeFileSync(promptPath, prompt, 'utf8');
+  const rec = {id, kind:'fable_direct_task', decidedBy:String(args.decidedBy||'User'), createdAt, status:'queued', task, contextSha256:crypto.createHash('sha256').update(Buffer.from(context)).digest('hex'), promptPath, replyText:'', fableRun:null, resultPath:'', blocked:false};
+  if(args.runNow !== false){
+    const run = runFablePromptFile(promptPath, Number(args.maxOutputChars||120000));
+    let text='';
+    try { text = JSON.parse(fs.readFileSync(run.resultPath,'utf8')).stdout || ''; } catch { text = JSON.stringify(run); }
+    const replyPath = assertWritable(path.join(fableDirectDir, `${id}_reply.txt`));
+    fs.writeFileSync(replyPath, text, 'utf8');
+    rec.status='answered'; rec.fableRun=run; rec.resultPath=replyPath; rec.replyText=compactDirectText(text,30000); rec.decidedBy='Fable5';
+  }
+  fs.writeFileSync(directTaskPath(id), JSON.stringify(rec,null,2),'utf8');
+  authorityAppend('fable_direct_task',{decidedBy:rec.decidedBy, taskId:id, status:rec.status, promptPath, resultPath:rec.resultPath, taskPreview:compactDirectText(task,2000)});
+  return {ok:true, authorityDir, directDir:fableDirectDir, task:rec};
+}
+function fableDirectInbox(args={}){
+  const limit=Number(args.limit||50);
+  const records=fs.readdirSync(fableDirectDir).filter(f=>f.endsWith('.json')).map(f=>JSON.parse(fs.readFileSync(path.join(fableDirectDir,f),'utf8'))).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt))).slice(0,limit);
+  return {ok:true,directDir:fableDirectDir,count:records.length,records};
+}
+function fableDirectRead(args={}){
+  const p=directTaskPath(args.id);
+  if(!fs.existsSync(p)) throw new Error('direct_task_not_found');
+  return {ok:true,record:JSON.parse(fs.readFileSync(p,'utf8'))};
+}
+function fableDirectDashboard(args={}){
+  const inbox=fableDirectInbox(args).records;
+  const answered=inbox.filter(x=>x.status==='answered').length;
+  const queued=inbox.filter(x=>x.status==='queued').length;
+  const dash={ok:true,generatedAt:new Date().toISOString(),directDir:fableDirectDir,total:inbox.length,answered,queued,records:inbox};
+  const jsonPath=assertWritable(path.join(fableDirectDir,'dashboard.json'));
+  fs.writeFileSync(jsonPath,JSON.stringify(dash,null,2),'utf8');
+  const rows=inbox.map(r=>`<section><h2>${htmlEscape(r.id)} - ${htmlEscape(r.status)}</h2><b>Message:</b><pre>${htmlEscape(r.task||'')}</pre><b>Reply:</b><pre>${htmlEscape(r.replyText||'')}</pre></section>`).join('\n');
+  const html=`<!doctype html><meta charset="utf-8"><title>Fable5 Direct Inbox</title><style>body{font-family:Segoe UI,Arial;margin:20px;max-width:1200px}pre{white-space:pre-wrap;background:#f6f6f6;padding:10px;border-radius:8px}section{border:1px solid #ddd;border-radius:10px;padding:12px;margin:12px 0}</style><h1>Fable5 Direct Inbox</h1><p>Answered: ${answered} | Queued: ${queued}</p>${rows}`;
+  const htmlPath=assertWritable(path.join(fableDirectDir,'dashboard.html'));
+  fs.writeFileSync(htmlPath,html,'utf8');
+  return {...dash,jsonPath,htmlPath};
+}
+
 function listTools() { return [
+
+ { name:'fable_direct_submit', title:'Submit direct Fable5 task', description:'Submit a user task directly to Fable5 through CompanionConnector with authority logging.', inputSchema:{type:'object',properties:{task:{type:'string'},context:{type:'string'},runNow:{type:'boolean'},maxOutputChars:{type:'number'},decidedBy:{type:'string'}},required:['task']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+ { name:'fable_direct_inbox', title:'Fable5 direct inbox', description:'List direct Fable5 tasks and replies.', inputSchema:{type:'object',properties:{limit:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'fable_direct_read', title:'Read direct Fable5 task', description:'Read a direct Fable5 task/reply record.', inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
+ { name:'fable_direct_dashboard', title:'Fable5 direct dashboard', description:'Create direct Fable5 inbox dashboard JSON and HTML.', inputSchema:{type:'object',properties:{limit:{type:'number'}}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
+
  { name:'search', title:'Search companion resources', description:'Search registered resources and job result pointers.', inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'fetch', title:'Fetch companion item', description:'Fetch registered text/image/job resource by id.', inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
  { name:'register_file_pointer', title:'Register file pointer', description:'Register a local file path without changing the source file.', inputSchema:{type:'object',properties:{filePath:{type:'string'},title:{type:'string'}},required:['filePath']}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
@@ -1214,6 +1283,11 @@ async function callTool(name, args={}) {
  if (name==='fable_authority_dashboard') return toolResult(fableAuthorityDashboard(args));
  if (name==='fable_autopilot_dry_run') return toolResult(fableAutopilotDryRun(args));
  if (name==='fable_autopilot_execute') return toolResult(fableAutopilotExecute(args));
+
+ if (name==='fable_direct_submit') return toolResult(fableDirectSubmit(args));
+ if (name==='fable_direct_inbox') return toolResult(fableDirectInbox(args));
+ if (name==='fable_direct_read') return toolResult(fableDirectRead(args));
+ if (name==='fable_direct_dashboard') return toolResult(fableDirectDashboard(args));
  if (name==='get_job_status') { const f=path.join(jobsDir,`${String(args.jobId)}.json`); if(!fs.existsSync(f)) throw new Error('job_not_found'); return toolResult(JSON.parse(fs.readFileSync(f,'utf8'))); }
  if (name==='list_registered_resources') return toolResult({resources:resourceIndex()});
  throw new Error('unknown_tool');
@@ -1221,10 +1295,10 @@ async function callTool(name, args={}) {
 
 function listResources() { return [ { uri:'companion://status', name:'Companion Connector status', mimeType:'application/json' }, { uri:'ui://companion/dashboard.html', name:'Companion dashboard', mimeType:'text/html;profile=mcp-app' }, { uri:'companion://mcp-services', name:'21 MCP service catalog', mimeType:'application/json' }, ...resourceIndex().map(r=>({uri:`companion://resource/${r.id}`, name:r.title||r.id, mimeType:(r.type||'').includes('image')?'application/json':'text/plain'})) ]; }
 function readResource(uri) { if(uri==='companion://status') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify({ok:true,root:ROOT,resources:resourceIndex().length,services:MCP_SERVICE_FOLDERS.length},null,2)}]}; if(uri==='ui://companion/dashboard.html') return {contents:[{uri,mimeType:'text/html;profile=mcp-app',text:fs.readFileSync(path.join(webDir,'dashboard.html'),'utf8')}]}; if(uri==='companion://mcp-services') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(serviceCatalog(),null,2)}]}; const m=String(uri).match(/^companion:\/\/resource\/(.+)$/); if(m) return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fetchResource(m[1]),null,2)}]}; throw new Error('resource_not_found'); }
-async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'20.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); try { const out=await callTool(name,args||{}); recordAuthorityToolAction(name,args||{},out,null); return rpc(id,out); } catch(toolErr) { recordAuthorityToolAction(name,args||{},null,toolErr); throw toolErr; } } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
+async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'21.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); try { const out=await callTool(name,args||{}); recordAuthorityToolAction(name,args||{},out,null); return rpc(id,out); } catch(toolErr) { recordAuthorityToolAction(name,args||{},null,toolErr); throw toolErr; } } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools for file pointers, jobs, image metadata, and MCP service catalog.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
 async function readBody(req){ const chunks=[]; for await (const c of req) chunks.push(c); return Buffer.concat(chunks).toString('utf8'); }
-const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'20.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
-server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v20 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
+const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'21.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
+server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v21 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
 
 
 

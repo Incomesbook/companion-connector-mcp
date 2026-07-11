@@ -305,3 +305,27 @@ results\fable_authority\dashboard.html
 
 Live-agent proof chain now records observation, Fable plan, executed/dry-run action, next observation, and dashboard evidence.
 
+
+
+## V21 Direct Fable5 Inbox
+
+Direct user-to-Fable5 task entry is available through:
+
+```powershell
+.\Fable5-Direct.ps1 "Ask Fable5 something directly"
+```
+
+Dashboard:
+
+```powershell
+.\Fable5-Direct-Dashboard.ps1
+```
+
+MCP tools:
+
+- `fable_direct_submit`
+- `fable_direct_inbox`
+- `fable_direct_read`
+- `fable_direct_dashboard`
+
+All direct messages are logged under `results\fable_direct` and mirrored into `results\fable_authority\decision_log.jsonl`.
