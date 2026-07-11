@@ -349,3 +349,17 @@ F5:
 ```
 
 The MCP connection cannot technically replace ChatGPT's base model by itself. The connected app must route these trigger messages to the `fable5` tool. The manifest is exposed at `companion://fable5-direct-mode` and via `fable5_direct_mode_manifest`.
+
+## V23 direct CLI fix
+
+The local direct command now accepts natural multi-argument PowerShell input and preserves UTF-8 Cyrillic text:
+
+```powershell
+.\Fable5-Direct.ps1 Yeah. "Запусти новый Хром."
+.\Fable5-Direct.ps1 "Запусти новый Хром."
+.\Fable5-Direct.ps1 -Strong "сложная задача для Fable5"
+```
+
+`-Strong` routes to local `qwen2.5:3b`; default remains the faster Fable path so existing MCP connections do not stall.
+
+See: `docs/V23_DIRECT_CLI_FIX_AND_MODEL_STATUS.md`.
