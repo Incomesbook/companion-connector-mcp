@@ -22,7 +22,12 @@ def call_fable(prompt: str, timeout: int = 180) -> dict:
     payload = '\n'.join(json.dumps(x, ensure_ascii=False) for x in reqs) + '\n'
     env = os.environ.copy()
     env.update({'PYTHONUTF8':'1','PYTHONIOENCODING':'utf-8','LC_ALL':'C.UTF-8','LANG':'C.UTF-8'})
-    r = subprocess.run([str(PYTHON), str(SERVER)], input=payload, text=True, encoding='utf-8', errors='replace', capture_output=True, timeout=timeout, env=env)
+    try:
+        r = subprocess.run([str(PYTHON), str(SERVER)], input=payload, text=True, encoding='utf-8', errors='replace', capture_output=True, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired as e:
+        return {'ok': False, 'text': '', 'error': 'TIMEOUT_EXPIRED', 'returncode': None, 'stderr': str(e)[-2000:]}
+    except Exception as e:
+        return {'ok': False, 'text': '', 'error': 'CALL_EXCEPTION', 'returncode': None, 'stderr': str(e)[-2000:]}
     answer = ''
     err = ''
     for line in (r.stdout or '').splitlines():
@@ -97,18 +102,26 @@ def run(args):
                 ok += 1
                 continue
         prompt = task_prompt(t, root, len(tasks))
-        result = call_fable(prompt, args.timeout)
+        result = None
+        attempts = 0
+        for attempt in range(1, args.retries + 2):
+            attempts = attempt
+            result = call_fable(prompt, args.timeout)
+            if result.get('ok'):
+                break
+            time.sleep(min(5 * attempt, 30))
         rec = {k:v for k,v in t.items() if k != 'text'}
-        rec.update(result)
+        rec.update(result or {'ok': False, 'error': 'NO_RESULT'})
+        rec['attempts'] = attempts
         rec['promptSha256'] = sha(prompt)
         out.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding='utf-8')
-        if result['ok']:
+        if rec.get('ok'):
             ok += 1
         else:
             fail += 1
             if args.stop_on_fail:
                 break
-        print(json.dumps({'task': t['taskId'], 'ok': result['ok'], 'okCount': ok, 'failCount': fail}, ensure_ascii=False), flush=True)
+        print(json.dumps({'task': t['taskId'], 'ok': rec.get('ok'), 'attempts': attempts, 'okCount': ok, 'failCount': fail}, ensure_ascii=False), flush=True)
     total = args.max_tasks if args.max_tasks else len(tasks)
     status = {'ok': fail == 0 and ok == total, 'okCount': ok, 'failCount': fail, 'attempted': ok + fail, 'required': total, 'totalTasks': len(tasks), 'completeAll': ok == len(tasks) and fail == 0}
     (out_dir / 'micro_status.json').write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -123,6 +136,7 @@ def main():
     ap.add_argument('--max-tasks', type=int, default=0)
     ap.add_argument('--timeout', type=int, default=180)
     ap.add_argument('--stop-on-fail', action='store_true')
+    ap.add_argument('--retries', type=int, default=2)
     args = ap.parse_args()
     raise SystemExit(run(args))
 

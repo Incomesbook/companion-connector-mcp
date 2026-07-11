@@ -1,6 +1,6 @@
 {
   "name": "companion-connector-mcp",
-  "version": "11.0.0",
+  "version": "13.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -20,7 +20,8 @@
     "test:v9": "node scripts/v9-summary-test.js",
     "test:v9:any": "node scripts/v9-any-root-test.js",
     "test:v9:grounded": "node scripts/v9-grounded-summary-test.js",
-    "test:v11": "python -X utf8 scripts/run_fable_micro_full_folder_review.py --index results/ro_content_20260710085101317_dc3cb0b0/content_index.json --out results/fable_micro_review_smoke --max-chars 1000 --max-tasks 1 --stop-on-fail"
+    "test:v11": "python -X utf8 scripts/run_fable_micro_full_folder_review.py --index results/ro_content_20260710085101317_dc3cb0b0/content_index.json --out results/fable_micro_review_smoke --max-chars 1000 --max-tasks 1 --stop-on-fail",
+    "test:v13": "node scripts/v13-media-test.js"
   },
   "keywords": [],
   "author": "",
