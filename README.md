@@ -235,3 +235,32 @@ Test:
 ```powershell
 npm run test:v15
 ```
+
+## V16 browser, live visual monitor, password archives, advanced charts, stronger Fable model
+
+V16 adds browser/DOM tools, repeated screenshot capture, password archive support,
+advanced chart image analysis, local model controls, and durable full Fable micro-read controls.
+
+New V16 tools include:
+
+```text
+browser_start
+browser_list_tabs
+browser_new_tab
+browser_navigate
+browser_dom_snapshot
+browser_screenshot
+desktop_screenshot
+browser_click_text
+browser_type_selector
+browser_press_key
+browser_live_monitor
+inspect_password_archive
+extract_password_archive_to_results
+analyze_chart_advanced
+local_model_status
+local_model_pull
+local_model_chat_test
+start_full_fable_micro_read
+get_full_fable_micro_status
+```
