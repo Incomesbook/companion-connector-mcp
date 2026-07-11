@@ -39,7 +39,14 @@ def version(port):
 
 def new_tab(port, url='about:blank'):
     u = urllib.parse.quote(url, safe=':/?&=#%')
-    return http_json(f'http://127.0.0.1:{port}/json/new?{u}')
+    target = f'http://127.0.0.1:{port}/json/new?{u}'
+    try:
+        req = urllib.request.Request(target, data=b'', method='PUT')
+        with urllib.request.urlopen(req, timeout=10) as r:
+            raw = r.read().decode('utf-8', errors='replace')
+            return json.loads(raw) if raw else {}
+    except Exception:
+        return http_json(target)
 def choose_tab(port, tab_id=None, index=None):
     ts = tabs(port)
     pages = [t for t in ts if t.get('type') == 'page']

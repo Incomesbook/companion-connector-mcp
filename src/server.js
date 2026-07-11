@@ -993,7 +993,7 @@ function fableDirectDashboard(args={}){
 function fable5ModeManifest(args={}){
   const manifest = {
     ok:true,
-    version:'23.0.0',
+    version:'24.0.0',
     mode:'Fable5 Direct Mode',
     triggerWords:['FABLE5:', '@Fable5', 'F5:'],
     primaryTool:'fable5',
@@ -1011,7 +1011,7 @@ function fableCapabilitiesSnapshot(args={}){
   const tools=listTools().map(t=>({name:t.name,title:t.title,description:t.description,readOnly:!!t.annotations?.readOnlyHint}));
   const docsDir=path.join(ROOT,'docs');
   const docs=fs.existsSync(docsDir)?fs.readdirSync(docsDir).filter(f=>f.toLowerCase().endsWith('.md')||f.toLowerCase().endsWith('.json')).sort():[];
-  const snap={ok:true,version:'23.0.0',toolCount:tools.length,tools,docs,directMode:fable5ModeManifest({}), generatedAt:new Date().toISOString()};
+  const snap={ok:true,version:'24.0.0',toolCount:tools.length,tools,docs,directMode:fable5ModeManifest({}), generatedAt:new Date().toISOString()};
   const p=assertWritable(path.join(authorityDir,'V22_FULL_CAPABILITIES_FOR_FABLE.json'));
   fs.writeFileSync(p, JSON.stringify(snap,null,2),'utf8');
   return {...snap,path:p};
@@ -1045,10 +1045,104 @@ function fable5RequestChatGPTHelp(args={}){
 function fable5DirectChat(args={}){
   const task=String(args.message||args.task||'').trim();
   if(!task) throw new Error('message_required');
-  return fable5Direct({task,context:args.context||'',maxOutputChars:args.maxOutputChars||120000,runNow:true,model:args.model||'',strong:!!args.strong});
+  return fableDirectExecute({...args, task});
+}
+
+
+
+const fableExecDir = path.join(resultsDir, 'fable_direct_exec');
+fs.mkdirSync(fableExecDir, {recursive:true});
+function directExecPath(id){ return path.join(fableExecDir, `${String(id)}.json`); }
+function htmlDataUrl(title, message){
+  const esc = s => String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const html = `<!doctype html><meta charset="utf-8"><title>${esc(title)}</title><body style="font-family:Segoe UI,Arial;margin:40px;background:#0b1020;color:#f5f7ff"><h1>${esc(title)}</h1><pre style="white-space:pre-wrap;font-size:18px;line-height:1.45;background:#151b30;padding:20px;border-radius:12px">${esc(message)}</pre></body>`;
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+}
+function directShowMessage(message, title='Fable5'){
+  const url = htmlDataUrl(title, message);
+  let start = browserBridge('start', ['--port','9222','--url','about:blank'], 300000);
+  let tab = null;
+  try { tab = browserBridge('new_tab', ['--port','9222','--url',url], 300000); } catch(e) { tab = {ok:false,error:String(e.message||e)}; }
+  let navigate = null;
+  if(!tab || tab.ok===false) {
+    try { navigate = browserBridge('navigate', ['--port','9222','--url',url,'--index','0','--wait','0.5'], 300000); } catch(e) { navigate = {ok:false,error:String(e.message||e)}; }
+  }
+  return {ok:!!(tab?.ok || navigate?.ok || start?.ok), type:'display_message', start, tab, navigate, messagePreview:compactDirectText(message,2000)};
+}
+function directPowerShellSafe(command){
+  const cmd = String(command||'').trim();
+  if(!cmd) return {ok:false,error:'empty_command'};
+  const bad = /\b(Remove-Item|rm\s|rmdir|del\s|Format-|Stop-Computer|Restart-Computer|Set-ExecutionPolicy|Invoke-WebRequest|iwr\s|curl\s|Start-BitsTransfer|reg\s+delete|takeown|icacls\s+.*\/grant|cipher\s+\/w)\b/i;
+  if(bad.test(cmd)) return {ok:false,blocked:true,error:'blocked_by_safe_powershell_policy',command:cmd};
+  const r=spawnSync('pwsh',['-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-Command',cmd],{cwd:ROOT,encoding:'utf8',timeout:120000,maxBuffer:1024*1024*8});
+  return {ok:r.status===0, code:r.status, stdout:(r.stdout||'').slice(-8000), stderr:(r.stderr||'').slice(-8000), command:cmd};
+}
+function directCurrentChatObserve(task=''){
+  const windows = runLiveBridge('list_windows',{query:'ChatGPT'},120000);
+  const focus = runLiveBridge('focus_window',{query:'ChatGPT'},120000);
+  const obs = createLiveAgentObservation({sessionId:safeId('fable_chat_observe'), task: task||'Fable5 observe current chat', includeBrowser:false, monitor:1});
+  let windowShot=null, windowOcr=null;
+  try { windowShot = runLiveBridge('window_screenshot',{query:'ChatGPT'},180000); } catch(e) { windowShot={ok:false,error:String(e.message||e)}; }
+  try { windowOcr = runLiveBridge('window_ocr',{query:'ChatGPT'},180000); } catch(e) { windowOcr={ok:false,error:String(e.message||e)}; }
+  return {ok:true, windows, focus, observation:obs, windowShot, windowOcr, note:'Window OCR reads the visible ChatGPT window only; full hidden chat history requires exported/passed transcript or browser DOM access.'};
+}
+function directBuildActions(task, fableText=''){
+  const s = (String(task||'') + '\n' + String(fableText||'')).toLowerCase();
+  const actions=[];
+  if(/(chrome|хром|browser|браузер)/i.test(s) && /(open|start|launch|запусти|открой|новый)/i.test(s)){
+    actions.push({type:'browser_start', reason:'request mentions opening browser/chrome', port:9222, url:'about:blank'});
+  }
+  if(/(прочитай|read|чат|chatgpt|current chat|текущ)/i.test(s)){
+    actions.push({type:'observe_current_chat', reason:'request asks to read/observe current chat screen'});
+  }
+  if(/(сообщение|message|покажи|выведи|display|screen|экран)/i.test(s) || actions.length){
+    actions.push({type:'display_message', reason:'show visible completion message', title:'Fable5 выполнено', message:'Fable5 direct executor completed the task. It opened/connected the browser if requested and observed the current ChatGPT screen where available. Full proof log is in results/fable_direct_exec.'});
+  }
+  if(!actions.length) actions.push({type:'none', reason:'no safe local action detected; saved Fable answer'});
+  return actions;
+}
+function directExecuteAction(action, task){
+  const type=String(action.type||'none');
+  try{
+    if(type==='none') return {ok:true,type,result:{noop:true,reason:action.reason||''}};
+    if(type==='browser_start') return {ok:true,type,result:browserBridge('start',['--port',String(action.port||9222),'--url',String(action.url||'about:blank')],300000)};
+    if(type==='browser_new_tab') return {ok:true,type,result:browserBridge('new_tab',['--port',String(action.port||9222),'--url',String(action.url||'about:blank')],300000)};
+    if(type==='browser_navigate') return {ok:true,type,result:browserBridge('navigate',['--port',String(action.port||9222),'--url',String(action.url||'about:blank'),'--index',String(action.index||0),'--wait',String(action.wait||1.5)],300000)};
+    if(type==='observe_current_chat') return {ok:true,type,result:directCurrentChatObserve(task)};
+    if(type==='display_message') return {ok:true,type,result:directShowMessage(action.message||'Fable5 completed.', action.title||'Fable5')};
+    if(type==='human_focus_window') return {ok:true,type,result:runLiveBridge('focus_window',{query:action.query||''},120000)};
+    if(type==='powershell_safe') return {ok:true,type,result:directPowerShellSafe(action.command||'')};
+    return {ok:false,type,error:'action_not_allowed'};
+  }catch(e){ return {ok:false,type,error:String(e.message||e)}; }
+}
+function parseFableActionJson(text){
+  const obj=parseJsonLoose(text);
+  if(!obj) return null;
+  if(Array.isArray(obj.actions)) return obj.actions;
+  if(obj.action) return [obj.action];
+  return null;
+}
+function fableDirectExecute(args={}){
+  const task=String(args.task||args.message||'').trim();
+  if(!task) throw new Error('task_required');
+  const startedAt=new Date().toISOString();
+  const rec=fableDirectSubmit({...args, task, decidedBy:'Fable5', runNow:true});
+  const fableText=rec?.task?.replyText||'';
+  let actions=parseFableActionJson(fableText) || directBuildActions(task, fableText);
+  const max=Number(args.maxActions||5);
+  actions=actions.slice(0,max);
+  const executed=[];
+  for(const a of actions){ executed.push(directExecuteAction(a, task)); }
+  const after= args.afterSnapshot===false ? null : createLiveAgentObservation({sessionId:rec.task.id+'_after', task:'after Fable5 direct execution', includeBrowser:false, monitor:1});
+  const out={ok:true, mode:'fable5_direct_execute', decidedBy:'Fable5', startedAt, finishedAt:new Date().toISOString(), taskId:rec.task.id, task, fableRecord:rec.task, actions, executed, after};
+  const p=assertWritable(directExecPath(rec.task.id));
+  fs.writeFileSync(p, JSON.stringify(out,null,2),'utf8');
+  authorityAppend('fable_direct_execute',{decidedBy:'Fable5', taskId:rec.task.id, taskPreview:compactDirectText(task,2000), actions:actions.map(a=>a.type), executedOk:executed.filter(x=>x.ok).length, executedFailed:executed.filter(x=>!x.ok).length, proofPath:p});
+  return {...out, proofPath:p};
 }
 
 function listTools() { return [
+ { name:'fable5_execute', title:'Fable5 direct execute', description:'Send task to Fable5, build a safe action plan, execute allowlisted local actions, and store proof log.', inputSchema:{type:'object',properties:{task:{type:'string'},message:{type:'string'},context:{type:'string'},strong:{type:'boolean'},model:{type:'string'},maxActions:{type:'number'},afterSnapshot:{type:'boolean'}},required:[]}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
 
  { name:'fable5', title:'Fable5 direct chat', description:'Directly ask Fable5. Use this as the primary route for FABLE5:, @Fable5 and F5: messages.', inputSchema:{type:'object',properties:{task:{type:'string'},message:{type:'string'},context:{type:'string'},maxOutputChars:{type:'number'},model:{type:'string'},strong:{type:'boolean'},runNow:{type:'boolean'}},required:[]}, outputSchema:{type:'object'}, annotations:{readOnlyHint:false} },
  { name:'fable5_direct_mode_manifest', title:'Fable5 direct mode manifest', description:'Return exact instructions for making the app route user messages to Fable5 first.', inputSchema:{type:'object',properties:{}}, outputSchema:{type:'object'}, annotations:{readOnlyHint:true} },
@@ -1360,6 +1454,7 @@ async function callTool(name, args={}) {
 
 
  if (name==='fable5') return toolResult(fable5DirectChat(args));
+ if (name==='fable5_execute') return toolResult(fableDirectExecute(args));
  if (name==='fable5_direct_mode_manifest') return toolResult(fable5ModeManifest(args));
  if (name==='fable_capability_snapshot') return toolResult(fableCapabilitiesSnapshot(args));
  if (name==='fable_capability_review') return toolResult(fableCapabilityReview(args));
@@ -1375,11 +1470,11 @@ async function callTool(name, args={}) {
 }
 
 function listResources() { return [ { uri:'companion://status', name:'Companion Connector status', mimeType:'application/json' }, { uri:'ui://companion/dashboard.html', name:'Companion dashboard', mimeType:'text/html;profile=mcp-app' }, { uri:'companion://mcp-services', name:'21 MCP service catalog', mimeType:'application/json' }, { uri:'companion://fable5-direct-mode', name:'Fable5 Direct Mode instructions', mimeType:'application/json' }, { uri:'companion://fable5-capabilities', name:'Fable5 full capability snapshot', mimeType:'application/json' }, ...resourceIndex().map(r=>({uri:`companion://resource/${r.id}`, name:r.title||r.id, mimeType:(r.type||'').includes('image')?'application/json':'text/plain'})) ]; }
-function readResource(uri) { if(uri==='companion://status') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify({ok:true,root:ROOT,resources:resourceIndex().length,services:MCP_SERVICE_FOLDERS.length,version:'23.0.0'},null,2)}]}; if(uri==='ui://companion/dashboard.html') return {contents:[{uri,mimeType:'text/html;profile=mcp-app',text:fs.readFileSync(path.join(webDir,'dashboard.html'),'utf8')}]}; if(uri==='companion://mcp-services') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(serviceCatalog(),null,2)}]}; if(uri==='companion://fable5-direct-mode') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fable5ModeManifest({}),null,2)}]}; if(uri==='companion://fable5-capabilities') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fableCapabilitiesSnapshot({}),null,2)}]}; const m=String(uri).match(/^companion:\/\/resource\/(.+)$/); if(m) return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fetchResource(m[1]),null,2)}]}; throw new Error('resource_not_found'); }
-async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'23.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); try { const out=await callTool(name,args||{}); recordAuthorityToolAction(name,args||{},out,null); return rpc(id,out); } catch(toolErr) { recordAuthorityToolAction(name,args||{},null,toolErr); throw toolErr; } } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'},{name:'fable5_direct_mode',title:'Route this chat to Fable5 first'},{name:'fable5_trigger_words',title:'Use FABLE5 / @Fable5 / F5 trigger words'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools. In Fable5 Direct Mode, route FABLE5, @Fable5, and F5 messages to the fable5 tool and return Fable5 answer with the authority log path. Act as transport unless Fable5 requests help.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
+function readResource(uri) { if(uri==='companion://status') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify({ok:true,root:ROOT,resources:resourceIndex().length,services:MCP_SERVICE_FOLDERS.length,version:'24.0.0'},null,2)}]}; if(uri==='ui://companion/dashboard.html') return {contents:[{uri,mimeType:'text/html;profile=mcp-app',text:fs.readFileSync(path.join(webDir,'dashboard.html'),'utf8')}]}; if(uri==='companion://mcp-services') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(serviceCatalog(),null,2)}]}; if(uri==='companion://fable5-direct-mode') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fable5ModeManifest({}),null,2)}]}; if(uri==='companion://fable5-capabilities') return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fableCapabilitiesSnapshot({}),null,2)}]}; const m=String(uri).match(/^companion:\/\/resource\/(.+)$/); if(m) return {contents:[{uri,mimeType:'application/json',text:JSON.stringify(fetchResource(m[1]),null,2)}]}; throw new Error('resource_not_found'); }
+async function handleRpc(msg) { const id=msg.id??null; try { if(msg.method==='initialize') return rpc(id,{protocolVersion:CFG.mcpProtocolVersion||'2025-06-18',capabilities:{tools:{},resources:{},prompts:{}},serverInfo:{name:'companion-connector',version:'24.0.0'}}); if(msg.method==='tools/list') return rpc(id,{tools:listTools()}); if(msg.method==='tools/call'){ const {name,arguments:args}=msg.params||{}; audit(name,args||{}); try { const out=await callTool(name,args||{}); recordAuthorityToolAction(name,args||{},out,null); return rpc(id,out); } catch(toolErr) { recordAuthorityToolAction(name,args||{},null,toolErr); throw toolErr; } } if(msg.method==='resources/list') return rpc(id,{resources:listResources()}); if(msg.method==='resources/read') return rpc(id,readResource(msg.params?.uri)); if(msg.method==='prompts/list') return rpc(id,{prompts:[{name:'inspect_large_file',title:'Inspect large file by pointer'},{name:'handoff_to_fable',title:'Prepare Fable prompt from pointers'},{name:'fable5_direct_mode',title:'Route this chat to Fable5 first'},{name:'fable5_trigger_words',title:'Use FABLE5 / @Fable5 / F5 trigger words'}]}); if(msg.method==='prompts/get') return rpc(id,{description:'Use Companion Connector tools. In Fable5 Direct Mode, route FABLE5, @Fable5, and F5 messages to the fable5 tool and return Fable5 answer with the authority log path. Act as transport unless Fable5 requests help.',messages:[]}); if(msg.method==='notifications/initialized'||msg.method?.startsWith('notifications/')) return null; return rpcErr(id,-32601,'method_not_found'); } catch(e){ return rpcErr(id,-32000,e.message||'error'); } }
 async function readBody(req){ const chunks=[]; for await (const c of req) chunks.push(c); return Buffer.concat(chunks).toString('utf8'); }
-const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'23.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
-server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v23 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
+const server=http.createServer(async(req,res)=>{ try{ const url=new URL(req.url,`http://${req.headers.host||'localhost'}`); if(req.method==='GET'&&(url.pathname==='/'||url.pathname==='/health')) return json(res,{ok:true,name:'companion-connector',version:'24.0.0',port:PORT,mcp:'/mcp',tools:listTools().length}); if(req.method==='GET'&&url.pathname==='/sse'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write('event: endpoint\ndata: /mcp\n\n'); return; } if(req.method==='GET'&&url.pathname==='/mcp'){ res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'}); res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/message',params:{level:'info',data:'companion connector ready'}})}\n\n`); return; } if(req.method==='GET'&&url.pathname.startsWith('/resource/')) return json(res,fetchResource(decodeURIComponent(url.pathname.slice('/resource/'.length)))); if(req.method==='POST'&&(url.pathname==='/mcp'||url.pathname==='/message')){ const body=await readBody(req); const input=body?JSON.parse(body):{}; const out=Array.isArray(input)?(await Promise.all(input.map(handleRpc))).filter(Boolean):await handleRpc(input); if(!out) return json(res,{},202); return json(res,out,200,{'MCP-Protocol-Version':CFG.mcpProtocolVersion||'2025-06-18'}); } return json(res,{error:'not_found'},404); } catch(e){ return json(res,{error:e.message||'server_error'},500); } });
+server.listen(PORT,HOST,()=>{ const line=`[${new Date().toISOString()}] companion-connector v24 listening http://${HOST}:${PORT}/mcp\n`; fs.appendFileSync(path.join(logsDir,'server.log'),line); console.log(line.trim()); });
 
 
 

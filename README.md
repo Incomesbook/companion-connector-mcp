@@ -363,3 +363,31 @@ The local direct command now accepts natural multi-argument PowerShell input and
 `-Strong` routes to local `qwen2.5:3b`; default remains the faster Fable path so existing MCP connections do not stall.
 
 See: `docs/V23_DIRECT_CLI_FIX_AND_MODEL_STATUS.md`.
+
+## V24 Fable5 direct execution
+
+V24 changes direct Fable5 mode from reply-only into safe execution mode.
+
+Direct CLI:
+
+```powershell
+.\Fable5-Direct.ps1 FABLE5: "Запусти новый Хром"
+```
+
+The MCP tool `fable5` now routes through the direct executor and writes proof logs under:
+
+```text
+results\fable_direct_exec\
+```
+
+New tool:
+
+- `fable5_execute`
+
+Test:
+
+```powershell
+npm run test:v24
+```
+
+Important: the executor can read visible screen/OCR and controlled browser DOM where available. Full hidden ChatGPT history requires transcript export/pass-through or browser DOM access.

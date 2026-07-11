@@ -1,6 +1,6 @@
 {
   "name": "companion-connector-mcp",
-  "version": "23.0.0",
+  "version": "24.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -33,7 +33,8 @@
     "test:v20:fable": "node scripts/v20-fable-proposal-smoke.js",
     "test:v21": "node scripts/v21-direct-fable-test.js",
     "test:v22": "node scripts/v22-direct-mode-test.js",
-    "test:v23": "node scripts/v22-direct-mode-test.js"
+    "test:v23": "node scripts/v22-direct-mode-test.js",
+    "test:v24": "node scripts/v24-direct-execute-test.js"
   },
   "keywords": [],
   "author": "",

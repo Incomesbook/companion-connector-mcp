@@ -34,15 +34,26 @@ def active_window(args):
 def focus_window(args):
     import pygetwindow as gw
     q=(args.get('query') or '').lower()
+    matched=None
     for w in gw.getAllWindows():
         if q and q in (w.title or '').lower():
+            matched=w
             try:
                 if w.isMinimized: w.restore()
                 w.activate()
                 time.sleep(0.4)
-                return ok({'focused': w.title})
-            except Exception as e:
-                return fail(e)
+                return ok({'focused': w.title, 'method':'pygetwindow'})
+            except Exception:
+                break
+    if matched is not None:
+        try:
+            import win32com.client
+            shell=win32com.client.Dispatch('WScript.Shell')
+            shell.AppActivate(matched.title)
+            time.sleep(0.4)
+            return ok({'focused': matched.title, 'method':'wscript_appactivate'})
+        except Exception as e:
+            return fail({'focus_failed': str(e), 'matched': matched.title})
     return fail('window_not_found')
 
 def screenshot(args):
@@ -117,10 +128,51 @@ def monitor(args):
                 diffs.append(sum(diff.histogram()[1:]))
             prev=im; i+=1; time.sleep(interval)
     ok({'dir': str(outdir), 'screenshots': paths, 'count': len(paths), 'changeScores': diffs})
+
+def _find_window(query):
+    q=(query or '').lower()
+    for w in _wins():
+        if q and q in (w.get('title') or '').lower() and not w.get('isMinimized'):
+            return w
+    for w in _wins():
+        if q and q in (w.get('title') or '').lower():
+            return w
+    return None
+
+def window_screenshot(args):
+    import mss
+    from PIL import Image
+    q=args.get('query') or ''
+    w=_find_window(q)
+    if not w: return fail('window_not_found')
+    outdir=RESULTS / ('window_screen_' + time.strftime('%Y%m%d_%H%M%S'))
+    outdir.mkdir(exist_ok=True)
+    left=max(0,int(w['left'])); top=max(0,int(w['top'])); width=max(1,int(w['width'])); height=max(1,int(w['height']))
+    with mss.mss() as sct:
+        mon={'left':left,'top':top,'width':width,'height':height}
+        img=sct.grab(mon)
+        im=Image.frombytes('RGB', img.size, img.rgb)
+    p=outdir/'window.png'
+    im.save(p)
+    ok({'path':str(p),'window':w,'width':im.width,'height':im.height,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()})
+
+def window_ocr(args):
+    import mss, pytesseract
+    from PIL import Image
+    q=args.get('query') or ''
+    w=_find_window(q)
+    if not w: return fail('window_not_found')
+    left=max(0,int(w['left'])); top=max(0,int(w['top'])); width=max(1,int(w['width'])); height=max(1,int(w['height']))
+    with mss.mss() as sct:
+        img=sct.grab({'left':left,'top':top,'width':width,'height':height})
+        im=Image.frombytes('RGB', img.size, img.rgb)
+    text=pytesseract.image_to_string(im)
+    ok({'text':text,'chars':len(text),'window':w})
+
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument('command'); ap.add_argument('--args', default='{}')
     ns=ap.parse_args(); args=json.loads(ns.args)
-    cmds={'list_windows':list_windows,'active_window':active_window,'focus_window':focus_window,'screenshot':screenshot,'screen_ocr':screen_ocr,'click':click,'move':move,'type_text':type_text,'press_key':press_key,'scroll':scroll,'monitor':monitor}
+    cmds={'list_windows':list_windows,'active_window':active_window,'focus_window':focus_window,'screenshot':screenshot,'screen_ocr':screen_ocr,'click':click,'move':move,'type_text':type_text,'press_key':press_key,'scroll':scroll,'monitor':monitor,'window_screenshot':window_screenshot,'window_ocr':window_ocr}
     if ns.command not in cmds: return fail('unknown_command')
     try: cmds[ns.command](args); return 0
     except Exception as e: return fail(e)
